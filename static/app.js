@@ -419,6 +419,46 @@ function expectedLightWait(signal, fromM, baseSpeedMS) {
   return 0;
 }
 
+// Realistische snelheid op een specifieke positie langs de route,
+// rekening houdend met wegtype, wettelijke max en spitsuur. Gebruikt
+// door de simulator EN als "huidige snelheid" voor GLOSA.
+function aiSpeedAt(distM, route) {
+  let speedKmh, factor;
+  if (route.limitIntervals?.length) {
+    let bestIv = null, bestSpan = Infinity;
+    for (const iv of route.limitIntervals) {
+      if (iv.fromM <= distM && distM <= iv.toM) {
+        const span = iv.toM - iv.fromM;
+        if (span < bestSpan) { bestSpan = span; bestIv = iv; }
+      }
+    }
+    if (bestIv) {
+      speedKmh = bestIv.speed;
+      factor = ROAD_SPEED_FACTORS[bestIv.roadClass] ?? 0.70;
+    }
+  }
+  if (speedKmh == null) {
+    // Fallback: route-gemiddelde uit OSRM
+    const osrmKmh = (route.distance / route.duration) * 3.6;
+    return Math.max(2, (osrmKmh / 3.6) * rushHourFactor());
+  }
+  return Math.max(2, (speedKmh / 3.6) * factor * rushHourFactor());
+}
+
+// Geïntegreerde reistijd over [fromM, toM] op realistische snelheid.
+function aiTimeToReach(route, fromM, toM) {
+  if (toM <= fromM) return 0;
+  const dist = toM - fromM;
+  const steps = Math.min(40, Math.max(3, Math.ceil(dist / 250)));
+  const stride = dist / steps;
+  let t = 0;
+  for (let i = 0; i < steps; i++) {
+    const d = fromM + (i + 0.5) * stride;
+    t += stride / aiSpeedAt(d, route);
+  }
+  return t;
+}
+
 // Hoofdfunctie van het model. Levert {durationS, drivingS, lightWaitS,
 // avgSpeedKmh, rushFactor, dominantClass}.
 function aiEstimate(route, fromM = 0) {
@@ -836,15 +876,15 @@ function renderEta() {
   const aiSrc = $("ai-source");
   if (aiSrc) aiSrc.textContent = ai.hasLimits ? "OSM-wegtype + tijd + lichten" : "OSRM-basis + tijd + lichten";
 }
-function renderUpcoming(signals, drivePosM, speed) {
+function renderUpcoming(route, drivePosM) {
   const list = $("upcoming-list");
   list.innerHTML = "";
-  const upcoming = signals.filter(s => s.distM > drivePosM + 1).slice(0, 8);
+  const upcoming = route.signals.filter(s => s.distM > drivePosM + 1).slice(0, 8);
   for (const s of upcoming) {
     const li = document.createElement("li");
     const remain = s.distM - drivePosM;
     if (s.smart) {
-      const eta = remain / speed;
+      const eta = aiTimeToReach(route, drivePosM, s.distM);
       const arr = predictAtArrival(s.offsetS, eta);
       li.innerHTML = `
         <span class="dot ${arr.color}"></span>
@@ -964,21 +1004,27 @@ async function planRoute() {
 function tick() {
   const r = state.routes[state.activeRouteIdx];
   if (!r) return;
-  const speed = avgSpeedMS();
 
   if (state.driving) {
     const now = performance.now();
-    const dt = (now - state.driveStart) / 1000;
-    state.drivePos = Math.min(r.distance, dt * speed);
+    const dt = tick._lastTickMs ? Math.min(1, (now - tick._lastTickMs) / 1000) : 0;
+    tick._lastTickMs = now;
+    const v = aiSpeedAt(state.drivePos, r);
+    state.drivePos = Math.min(r.distance, state.drivePos + v * dt);
     if (state.drivePos >= r.distance) {
       state.driving = false;
+      tick._lastTickMs = null;
       $("drive-toggle").textContent = "Start rit";
       finishDrive();
     }
     const p = pointAtDistance(r.coords, r.cumDist, state.drivePos);
-    state.driver.setLatLng(p);
+    if (state.driver) state.driver.setLatLng(p);
     if (state.driving && !state.followGps) map.panTo(p, { animate: false });
+  } else {
+    tick._lastTickMs = null;
   }
+  // Realistische "huidige snelheid" voor GLOSA en upcoming-ETAs
+  const speed = state.driving ? aiSpeedAt(state.drivePos, r) : avgSpeedMS();
 
   // Update slimme markers (route)
   for (let i = 0; i < r.signals.length; i++) {
@@ -1004,31 +1050,38 @@ function tick() {
   const currentLimitKmh = speedLimitAt(intervals, state.drivePos, fallbackKmh);
   setSpeedSign(currentLimitKmh);
 
-  // Volgend stoplicht
+  // Volgend stoplicht — gebruik geïntegreerde AI-tijd voor accurate ETA
   const next = r.signals.find(s => s.distM > state.drivePos + 1);
   if (next) {
     const remainingM = next.distM - state.drivePos;
     if (next.smart) {
-      const eta = remainingM / speed;
+      const eta = aiTimeToReach(r, state.drivePos, next.distM);
       const nowPh = phaseAt(next.offsetS);
       const arrPh = predictAtArrival(next.offsetS, eta);
       setNextLightUI({
         smart: true, color: nowPh.color, phase: nowPh.phase,
         secondsLeft: nowPh.secondsLeft, remainingM, arrival: arrPh.phase,
       });
-      // GLOSA-advies — capped op de laagste limiet tussen hier en het licht
       if (state.driving) {
         const limKmh = lowestLimitBetween(intervals, state.drivePos, next.distM, fallbackKmh);
         const tip = computeGlosa(remainingM, next, speed, limKmh / 3.6);
+        const currentKmh = Math.round(speed * 3.6);
         if (tip && tip.feasible) {
           const targetKmh = Math.round(tip.v * 3.6);
-          if (Math.abs(targetKmh - Math.round(speed * 3.6)) <= 2) {
-            setGlosa(`Op kruissnelheid haal je groen (max ${limKmh})`, "ok");
+          const diff = targetKmh - currentKmh;
+          if (Math.abs(diff) <= 2) {
+            setGlosa(`Hou ~${currentKmh} km/u aan — groen bij aankomst`, "ok");
+          } else if (diff > 0) {
+            setGlosa(`Versnel naar ${targetKmh} km/u (nu ${currentKmh}, max ${limKmh})`, "ok");
           } else {
-            setGlosa(`Rijd ~${targetKmh} km/u voor groen (limiet ${limKmh})`, "ok");
+            setGlosa(`Houd in tot ${targetKmh} km/u (nu ${currentKmh}) voor groen`, "ok");
           }
         } else {
-          setGlosa(`Wordt rood — niet binnen limiet ${limKmh} te halen`, "warn");
+          if (arrPh.color === "red") {
+            setGlosa(`Wordt rood — ~${Math.round(arrPh.secondsLeft)}s wachten (nu ${currentKmh} km/u)`, "warn");
+          } else {
+            setGlosa(`Niet groen haalbaar binnen ${limKmh} km/u`, "warn");
+          }
         }
       } else setGlosa(null);
       // Spraak: 1x per licht aankondigen op ~150m
@@ -1051,7 +1104,7 @@ function tick() {
   const t = Math.floor(performance.now() / 500);
   if (t !== tick._lastT) {
     tick._lastT = t;
-    renderUpcoming(r.signals, state.drivePos, speed);
+    renderUpcoming(r, state.drivePos);
     renderEta();
     updateCompactSummary();
   }
@@ -1308,10 +1361,11 @@ $("drive-toggle").addEventListener("click", () => {
   if (state.activeRouteIdx < 0) return;
   if (state.driving) {
     state.driving = false;
+    tick._lastTickMs = null;
     $("drive-toggle").textContent = "Hervat";
   } else {
     state.driving = true;
-    state.driveStart = performance.now() - (state.drivePos / avgSpeedMS()) * 1000;
+    tick._lastTickMs = null; // begin met dt=0 zodat positie niet verspringt
     state.driveStats = { startedAt: Date.now() / 1000 };
     $("drive-toggle").textContent = "Pauze";
   }
