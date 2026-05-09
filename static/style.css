@@ -773,6 +773,29 @@ html[data-theme="light"] .upcoming-list li { background: rgba(0,0,0,0.03); }
 }
 .toast.error { background: var(--red); border-color: transparent; }
 
+/* Snelheidsbord */
+.speed-sign {
+  position: fixed;
+  z-index: 18;
+  top: max(env(safe-area-inset-top), 1rem);
+  right: 1rem;
+  width: 60px; height: 60px;
+  background: #fff;
+  border: 5px solid #c8102e;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  font-size: 1.3rem;
+  color: #0a0e14;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+@media (min-width: 720px) {
+  .speed-sign { top: 1rem; right: 1rem; width: 64px; height: 64px; font-size: 1.4rem; }
+}
+
 /* Markers */
 .signal-marker {
   width: 14px; height: 14px;

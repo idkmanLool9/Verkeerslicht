@@ -285,6 +285,96 @@ async function fetchSignalsBbox(bbox) {
   const json = await res.json();
   return json.elements ?? [];
 }
+
+// Snelheidslimieten van OSM-ways langs de route. We samplen de route
+// elke ~stride meter en doen een Overpass `around:`-query. Levert ways
+// met maxspeed-tag terug; daarna projecteren we ze op de route.
+async function fetchMaxspeedAlongRoute(route) {
+  const stride = Math.max(150, Math.ceil(route.distance / 150));
+  const samples = [];
+  for (let d = 0; d < route.distance; d += stride) {
+    samples.push(pointAtDistance(route.coords, route.cumDist, d));
+    if (samples.length >= 200) break;
+  }
+  if (!samples.length) return [];
+  const around = samples.map(([lat, lon]) => `${lat.toFixed(5)},${lon.toFixed(5)}`).join(",");
+  const query = `[out:json][timeout:30];way["highway"]["maxspeed"](around:25,${around});out tags geom;`;
+  try {
+    const res = await fetch(OVERPASS, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.elements ?? [];
+  } catch { return []; }
+}
+
+// Zet maxspeed-string om naar km/u (of null als onbekend).
+function parseMaxspeed(s) {
+  if (s == null) return null;
+  let v = String(s).trim().toLowerCase();
+  if (!v) return null;
+  if (v === "none" || v === "signals" || v === "variable") return null;
+  if (v === "walk") return 5;
+  if (v.includes("nl:zone30")) return 30;
+  if (v.includes("nl:zone60")) return 60;
+  if (v.includes("nl:urban")) return 50;
+  if (v.includes("nl:rural")) return 80;
+  if (v.includes("nl:trunk")) return 100;
+  if (v.includes("nl:motorway")) return 130;
+  const m = v.match(/^(\d+)(?:\.\d+)?\s*(mph|kmh|km\/h)?$/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (m[2] === "mph") return Math.round(n * 1.609344);
+    return n;
+  }
+  return null;
+}
+
+// Bouw [{fromM, toM, speed}, …] door way-geometry op de route te
+// projecteren. Een way overlapt waar zijn punten ≤25m van de route zitten.
+function buildSpeedIntervals(ways, route) {
+  const intervals = [];
+  for (const w of ways) {
+    const speed = parseMaxspeed(w.tags?.maxspeed);
+    if (speed == null) continue;
+    const ds = [];
+    for (const pt of w.geometry || []) {
+      const proj = projectOnPolyline([pt.lat, pt.lon], route.coords, route.cumDist);
+      if (proj.minD < 25) ds.push(proj.distAlong);
+    }
+    if (ds.length < 2) continue;
+    intervals.push({ speed, fromM: Math.min(...ds), toM: Math.max(...ds) });
+  }
+  intervals.sort((a, b) => a.fromM - b.fromM);
+  return intervals;
+}
+
+// Limiet bij een specifieke positie. Pakt het kortste overlappend
+// interval (specifiekere weg-tag wint) of fallback.
+function speedLimitAt(intervals, distM, fallback = 50) {
+  let bestSpan = Infinity;
+  let lim = fallback;
+  for (const iv of intervals) {
+    if (iv.fromM <= distM && distM <= iv.toM) {
+      const span = iv.toM - iv.fromM;
+      if (span < bestSpan) { bestSpan = span; lim = iv.speed; }
+    }
+  }
+  return lim;
+}
+
+// Laagste limiet tussen [fromM, toM].
+function lowestLimitBetween(intervals, fromM, toM, fallback = 50) {
+  let lim = Infinity;
+  for (const iv of intervals) {
+    if (iv.toM < fromM || iv.fromM > toM) continue;
+    if (iv.speed < lim) lim = iv.speed;
+  }
+  return lim === Infinity ? fallback : lim;
+}
 function bboxOfCoords(coords, padDeg = 0.005) {
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
   for (const [lat, lon] of coords) {
@@ -530,6 +620,13 @@ function setGlosa(text, kind) {
   if (kind === "warn") el.classList.add("warn");
   $("glosa-text").textContent = text;
 }
+function setSpeedSign(kmh) {
+  const el = $("speed-sign");
+  if (!el) return;
+  if (kmh == null) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  $("speed-sign-num").textContent = String(Math.round(kmh));
+}
 
 function renderRouteList() {
   const list = $("routes-list");
@@ -603,23 +700,24 @@ function renderUpcoming(signals, drivePosM, speed) {
 
 // ============ GLOSA ============
 // Bereken een snelheidsadvies: welke snelheid moet je rijden om bij
-// het volgende slimme licht aan te komen tijdens groen?
-function computeGlosa(remainingM, smartLight, currentSpeedMS) {
+// het volgende slimme licht aan te komen tijdens groen, ZONDER de
+// wettelijke maxsnelheid te overschrijden?
+function computeGlosa(remainingM, smartLight, currentSpeedMS, limitMS) {
   if (!smartLight || !smartLight.smart || remainingM <= 0) return null;
-  const minMS = currentSpeedMS * 0.6;  // niet idioot langzaam
-  const maxMS = currentSpeedMS * 1.4;  // niet idioot snel (reëel binnen +20%)
-  // Sample target speeds en kies degene met groen bij aankomst en
-  // het kleinste verschil met huidige snelheid.
+  const minMS = Math.max(2, Math.min(currentSpeedMS, limitMS) * 0.4);
+  const maxMS = Math.min(limitMS, Math.max(currentSpeedMS, limitMS));
+  if (maxMS <= minMS) return { feasible: false, limitMS };
   let best = null;
   for (let v = minMS; v <= maxMS; v += 0.25) {
     const eta = remainingM / v;
-    if (eta > 120) continue;
+    if (eta > 180) continue;
     const ph = predictAtArrival(smartLight.offsetS, eta);
     if (ph.color !== "green") continue;
     const diff = Math.abs(v - currentSpeedMS);
     if (!best || diff < best.diff) best = { v, diff, eta };
   }
-  return best;
+  if (best) return { feasible: true, ...best, limitMS };
+  return { feasible: false, limitMS };
 }
 
 // ============ Spraak ============
@@ -654,6 +752,12 @@ async function planRoute() {
     for (const r of routes) {
       r.signals = filterSignalsToRoute(rawSignals, r.coords, r.cumDist);
     }
+
+    setLoading("Snelheidslimieten ophalen…");
+    const limitWaysPerRoute = await Promise.all(routes.map(fetchMaxspeedAlongRoute));
+    routes.forEach((r, i) => {
+      r.limitIntervals = buildSpeedIntervals(limitWaysPerRoute[i], r);
+    });
 
     clearAll();
     state.routes = routes;
@@ -728,6 +832,12 @@ function tick() {
     });
   }
 
+  // Snelheidslimieten op basis van OSM
+  const intervals = r.limitIntervals || [];
+  const fallbackKmh = state.profile === "driving" ? 50 : state.profile === "cycling" ? 25 : 5;
+  const currentLimitKmh = speedLimitAt(intervals, state.drivePos, fallbackKmh);
+  setSpeedSign(currentLimitKmh);
+
   // Volgend stoplicht
   const next = r.signals.find(s => s.distM > state.drivePos + 1);
   if (next) {
@@ -740,16 +850,19 @@ function tick() {
         smart: true, color: nowPh.color, phase: nowPh.phase,
         secondsLeft: nowPh.secondsLeft, remainingM, arrival: arrPh.phase,
       });
-      // GLOSA-advies tijdens rijden
+      // GLOSA-advies — capped op de laagste limiet tussen hier en het licht
       if (state.driving) {
-        const tip = computeGlosa(remainingM, next, speed);
-        if (tip && tip.diff > 1) {
+        const limKmh = lowestLimitBetween(intervals, state.drivePos, next.distM, fallbackKmh);
+        const tip = computeGlosa(remainingM, next, speed, limKmh / 3.6);
+        if (tip && tip.feasible) {
           const targetKmh = Math.round(tip.v * 3.6);
-          setGlosa(`Rijd ~${targetKmh} km/u voor groen`, "ok");
-        } else if (arrPh.color === "red") {
-          setGlosa(`Onmogelijk groen zonder versnellen`, "warn");
+          if (Math.abs(targetKmh - Math.round(speed * 3.6)) <= 2) {
+            setGlosa(`Op kruissnelheid haal je groen (max ${limKmh})`, "ok");
+          } else {
+            setGlosa(`Rijd ~${targetKmh} km/u voor groen (limiet ${limKmh})`, "ok");
+          }
         } else {
-          setGlosa(`Op kruissnelheid kom je groen aan`, "ok");
+          setGlosa(`Wordt rood — niet binnen limiet ${limKmh} te halen`, "warn");
         }
       } else setGlosa(null);
       // Spraak: 1x per licht aankondigen op ~150m
