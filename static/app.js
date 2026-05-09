@@ -358,10 +358,8 @@ function fmtCo2(grams) {
 }
 
 // ============ Voertuig (RDW) ============
-const RDW_VEHICLE = "https://opendata.rdw.nl/resource/m9d7-ebf2.json";
-const RDW_FUEL    = "https://opendata.rdw.nl/resource/8ys7-d773.json";
-const VEHICLE_KEY = "verkeerslicht.vehicle";
-
+// LET OP: deze functies worden tijdens state-init aangeroepen, dus geen
+// const-verwijzingen die hierna pas geinitialiseerd worden.
 function normalizeKenteken(s) {
   return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").substring(0, 8);
 }
@@ -373,19 +371,19 @@ function formatKenteken(s) {
   return `${k.slice(0, 2)}-${k.slice(2, 4)}-${k.slice(4, 6)}-${k.slice(6)}`;
 }
 function loadVehicle() {
-  try { return JSON.parse(localStorage.getItem(VEHICLE_KEY) || "null"); } catch { return null; }
+  try { return JSON.parse(localStorage.getItem("verkeerslicht.vehicle") || "null"); } catch { return null; }
 }
 function saveVehicle(v) {
-  try { localStorage.setItem(VEHICLE_KEY, JSON.stringify(v)); } catch {}
+  try { localStorage.setItem("verkeerslicht.vehicle", JSON.stringify(v)); } catch {}
 }
-function clearVehicle() { localStorage.removeItem(VEHICLE_KEY); }
+function clearVehicle() { localStorage.removeItem("verkeerslicht.vehicle"); }
 
 async function fetchVehicleByKenteken(kenteken) {
   const k = normalizeKenteken(kenteken);
   if (!k) throw new Error("Geen kenteken");
   const [base, fuel] = await Promise.all([
-    fetch(`${RDW_VEHICLE}?kenteken=${k}`).then(r => r.json()).catch(() => []),
-    fetch(`${RDW_FUEL}?kenteken=${k}`).then(r => r.json()).catch(() => []),
+    fetch(`https://opendata.rdw.nl/resource/m9d7-ebf2.json?kenteken=${k}`).then(r => r.json()).catch(() => []),
+    fetch(`https://opendata.rdw.nl/resource/8ys7-d773.json?kenteken=${k}`).then(r => r.json()).catch(() => []),
   ]);
   if (!base.length) throw new Error("Kenteken niet gevonden");
   const v = base[0];
