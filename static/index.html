@@ -109,9 +109,21 @@
     </div>
   </aside>
 
-  <!-- Speed-limit-bord (zichtbaar tijdens rit) -->
+  <!-- Speed-limit-bord -->
   <div id="speed-sign" class="speed-sign hidden">
     <span id="speed-sign-num">50</span>
+  </div>
+
+  <!-- Huidige snelheid -->
+  <div id="speedo" class="speedo hidden">
+    <span id="speedo-num">0</span>
+    <span class="speedo-unit">km/u</span>
+  </div>
+
+  <!-- Weerblok -->
+  <div id="weather" class="weather hidden">
+    <span id="weather-icon">☀️</span>
+    <span id="weather-temp">--°</span>
   </div>
 
   <!-- Bottom sheet -->
@@ -133,7 +145,10 @@
           <span id="eta-smart">0</span> slim
         </div>
       </div>
-      <button id="drive-toggle" class="btn btn-primary btn-compact">Start rit</button>
+      <div class="drive-buttons">
+        <button id="drive-toggle" class="btn btn-primary btn-compact">Start rit</button>
+        <button id="drive-stop" class="btn btn-danger btn-compact hidden" title="Rit afbreken">⏹ Stop</button>
+      </div>
     </div>
 
 
@@ -175,8 +190,31 @@
         <div><span class="stat-num" id="stat-lights">–</span><span class="stat-label">lichten</span></div>
         <div><span class="stat-num" id="stat-red">–</span><span class="stat-label">rood</span></div>
         <div><span class="stat-num" id="stat-green">–</span><span class="stat-label">groen</span></div>
+        <div><span class="stat-num" id="stat-co2">–</span><span class="stat-label">CO₂</span></div>
       </div>
       <button id="stats-close" class="btn btn-primary btn-block">Sluiten</button>
+    </div>
+  </div>
+
+  <!-- Confetti-canvas -->
+  <canvas id="confetti" class="confetti hidden"></canvas>
+
+  <!-- Long-press menu -->
+  <div id="map-menu" class="map-menu hidden">
+    <button data-role="from">Vertrek hier</button>
+    <button data-role="via">Tussenstop</button>
+    <button data-role="to">Bestemming hier</button>
+  </div>
+
+  <!-- Error overlay -->
+  <div id="error-overlay" class="error-overlay hidden">
+    <div class="error-card">
+      <div class="error-title">⚠️ Iets ging mis</div>
+      <pre id="error-text"></pre>
+      <div class="error-actions">
+        <button id="error-copy" class="btn btn-ghost btn-compact">Kopieer</button>
+        <button id="error-close" class="btn btn-primary btn-compact">Sluiten</button>
+      </div>
     </div>
   </div>
 

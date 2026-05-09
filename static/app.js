@@ -60,6 +60,48 @@ const IVRI_HOTSPOTS = [
   { name: "Almere",          lat: 52.3508, lon: 5.2647, ratio: 25 },
 ];
 
+// ============ Adaptief leren ============
+// Onthoud per signaal-id de werkelijke wachttijden die je opliep.
+// Na een paar samples passen we onze fase-voorspelling aan.
+function loadAdaptive() {
+  try { return JSON.parse(localStorage.getItem("verkeerslicht.adaptive") || "{}"); }
+  catch { return {}; }
+}
+function saveAdaptive(data) {
+  try { localStorage.setItem("verkeerslicht.adaptive", JSON.stringify(data)); } catch {}
+}
+function recordObservedWait(signalId, waitSeconds) {
+  const data = loadAdaptive();
+  const e = data[signalId] || { samples: [], n: 0, sum: 0 };
+  e.samples = [...e.samples.slice(-9), waitSeconds]; // laatste 10
+  e.n = e.samples.length;
+  e.sum = e.samples.reduce((a, b) => a + b, 0);
+  e.avg = e.sum / e.n;
+  data[signalId] = e;
+  saveAdaptive(data);
+}
+function adaptiveStatsFor(signalId) {
+  const data = loadAdaptive();
+  const e = data[signalId];
+  return e && e.n >= 2 ? e : null;
+}
+
+// ============ Cache ============
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+function cacheKey(prefix, key) { return `verkeerslicht.cache.${prefix}.${key}`; }
+function cacheGet(prefix, key) {
+  try {
+    const raw = localStorage.getItem(cacheKey(prefix, key));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (Date.now() - obj.t > CACHE_TTL_MS) return null;
+    return obj.v;
+  } catch { return null; }
+}
+function cacheSet(prefix, key, v) {
+  try { localStorage.setItem(cacheKey(prefix, key), JSON.stringify({ t: Date.now(), v })); } catch {}
+}
+
 // ============ State ============
 const state = {
   routes: [],
@@ -85,12 +127,33 @@ const state = {
 };
 
 // ============ Theme ============
+const THEME_ICONS = { dark: "🌙", light: "☀️", hc: "🟡" };
+const THEME_ORDER = ["dark", "light", "hc"];
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  $("theme-toggle").textContent = t === "light" ? "☀️" : "🌙";
+  $("theme-toggle").textContent = THEME_ICONS[t] || "🌙";
+  $("theme-toggle").title = `Thema: ${t} (klik om te wisselen)`;
   localStorage.setItem("verkeerslicht.theme", t);
 }
 applyTheme(localStorage.getItem("verkeerslicht.theme") || "dark");
+
+// ============ Wake-lock ============
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ("wakeLock" in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    }
+  } catch {}
+}
+async function releaseWakeLock() {
+  try { if (wakeLock) await wakeLock.release(); } catch {}
+  wakeLock = null;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.driving) requestWakeLock();
+});
 
 // ============ Map ============
 const map = L.map("map", {
@@ -237,6 +300,97 @@ function predictAtArrival(offsetS, etaSeconds) {
 }
 function offsetForNode(id) {
   return Math.abs((Number(id) * 31) % CYCLE_TOTAL) - CYCLE_TOTAL / 2;
+}
+
+// ============ Weer (Open-Meteo, gratis, geen key) ============
+const WEATHER_ICON = {
+  0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+  45: "🌫️", 48: "🌫️",
+  51: "🌦️", 53: "🌦️", 55: "🌦️",
+  61: "🌧️", 63: "🌧️", 65: "🌧️",
+  71: "🌨️", 73: "🌨️", 75: "❄️",
+  80: "🌧️", 81: "🌧️", 82: "⛈️",
+  95: "⛈️", 96: "⛈️", 99: "⛈️",
+};
+async function fetchWeather(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&current=temperature_2m,weather_code,precipitation`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return (await res.json()).current ?? null;
+  } catch { return null; }
+}
+function weatherFactor(w) {
+  if (!w) return 1.0;
+  const p = w.precipitation ?? 0;
+  if (p > 5) return 0.82;
+  if (p > 2) return 0.90;
+  if (p > 0.2) return 0.95;
+  return 1.0;
+}
+function renderWeather(w) {
+  const el = $("weather");
+  if (!w) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  $("weather-icon").textContent = WEATHER_ICON[w.weather_code] ?? "🌡️";
+  $("weather-temp").textContent = `${Math.round(w.temperature_2m)}°`;
+}
+let currentWeather = null;
+async function refreshWeather(lat, lon) {
+  currentWeather = await fetchWeather(lat, lon);
+  renderWeather(currentWeather);
+}
+
+// ============ CO2 / verbruik ============
+const EMISSIONS = {
+  driving: { co2_g_per_km: 120, label: "auto (benzine)" },
+  cycling: { co2_g_per_km: 0,   label: "fiets" },
+  foot:    { co2_g_per_km: 0,   label: "lopen" },
+};
+function fmtCo2(grams) {
+  if (grams < 1000) return `${Math.round(grams)} g`;
+  return `${(grams / 1000).toFixed(1)} kg`;
+}
+
+// ============ Confetti ============
+function fireConfetti(durationMs = 2000) {
+  const cv = $("confetti");
+  cv.classList.remove("hidden");
+  cv.width = window.innerWidth;
+  cv.height = window.innerHeight;
+  const ctx = cv.getContext("2d");
+  const COLORS = ["#ffcc00", "#34c759", "#ff3b30", "#2997ff", "#ffffff"];
+  const N = 160;
+  const parts = Array.from({ length: N }, () => ({
+    x: window.innerWidth / 2 + (Math.random() - 0.5) * 200,
+    y: window.innerHeight / 2,
+    vx: (Math.random() - 0.5) * 14,
+    vy: (Math.random() - 0.9) * 14,
+    rot: Math.random() * Math.PI * 2,
+    vr: (Math.random() - 0.5) * 0.4,
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+    size: 6 + Math.random() * 6,
+  }));
+  const start = performance.now();
+  function frame(t) {
+    const elapsed = t - start;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const p of parts) {
+      p.vy += 0.3;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.vr;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.5);
+      ctx.restore();
+    }
+    if (elapsed < durationMs) requestAnimationFrame(frame);
+    else { ctx.clearRect(0, 0, cv.width, cv.height); cv.classList.add("hidden"); }
+  }
+  requestAnimationFrame(frame);
 }
 
 // ============ External APIs ============
@@ -437,12 +591,13 @@ function aiSpeedAt(distM, route) {
       factor = ROAD_SPEED_FACTORS[bestIv.roadClass] ?? 0.70;
     }
   }
+  const wf = weatherFactor(currentWeather);
   if (speedKmh == null) {
     // Fallback: route-gemiddelde uit OSRM
     const osrmKmh = (route.distance / route.duration) * 3.6;
-    return Math.max(2, (osrmKmh / 3.6) * rushHourFactor());
+    return Math.max(2, (osrmKmh / 3.6) * rushHourFactor() * wf);
   }
-  return Math.max(2, (speedKmh / 3.6) * factor * rushHourFactor());
+  return Math.max(2, (speedKmh / 3.6) * factor * rushHourFactor() * wf);
 }
 
 // Geïntegreerde reistijd over [fromM, toM] op realistische snelheid.
@@ -597,9 +752,38 @@ function makeSignalMarker(s, addToMap = true) {
     html: `<div class="${className}"></div>`,
     iconSize: [sz, sz], iconAnchor: [sz/2, sz/2],
   });
-  const m = L.marker([s.lat, s.lon], { icon, interactive: false });
+  const m = L.marker([s.lat, s.lon], { icon, interactive: true, keyboard: false });
+  m._signalData = s;
+  m.on("click", () => openLightPopup(m, s));
   if (addToMap) m.addTo(map);
   return m;
+}
+
+function openLightPopup(marker, s) {
+  const tag = s.smart
+    ? '<span class="lp-tag smart">slim — live status</span>'
+    : '<span class="lp-tag classic">klassiek — geen timer</span>';
+  let phaseRow = "";
+  if (s.smart) {
+    const ph = phaseAt(s.offsetS);
+    phaseRow = `
+      <div class="lp-row"><span>Huidige fase</span><b>${ph.phase}</b></div>
+      <div class="lp-row"><span>Wisselt over</span><b>${Math.round(ph.secondsLeft)}s</b></div>`;
+  }
+  const learn = adaptiveStatsFor(s.id);
+  const learnRow = learn
+    ? `<div class="lp-row"><span>Geleerd (${learn.n}x)</span><b>${learn.avg.toFixed(0)}s gem.</b></div>`
+    : "";
+  const html = `
+    <div class="light-popup">
+      <div class="lp-title">Stoplicht ${s.id}</div>
+      ${tag}
+      <div class="lp-row"><span>Locatie</span><b>${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</b></div>
+      ${phaseRow}
+      ${learnRow}
+      <div class="lp-row"><a href="https://www.openstreetmap.org/node/${s.id}" target="_blank" rel="noopener">Open in OSM</a></div>
+    </div>`;
+  marker.bindPopup(html, { closeButton: true, autoPanPadding: [40, 40] }).openPopup();
 }
 function setSmartMarkerColor(marker, color) {
   const el = marker.getElement()?.querySelector(".signal-marker.smart");
@@ -617,12 +801,94 @@ function makeEndpointMarker(lat, lon, kind = "from") {
   return L.marker([lat, lon], { icon }).addTo(map);
 }
 function makeDriverMarker(lat, lon) {
+  const html = `
+    <div class="driver-marker">
+      <svg viewBox="0 0 24 24"><path d="M12 2 L19 20 L12 16 L5 20 Z"/></svg>
+    </div>`;
   const icon = L.divIcon({
     className: "",
-    html: '<div class="driver-marker"></div>',
-    iconSize: [18, 18], iconAnchor: [9, 9],
+    html,
+    iconSize: [28, 28], iconAnchor: [14, 14],
   });
-  return L.marker([lat, lon], { icon }).addTo(map);
+  return L.marker([lat, lon], { icon, zIndexOffset: 1000 }).addTo(map);
+}
+function setDriverHeading(deg) {
+  const el = state.driver?.getElement()?.querySelector(".driver-marker svg");
+  if (el) el.style.transform = `rotate(${deg}deg)`;
+}
+// Compass-bearing van punt a → b in graden (0=N, 90=O).
+function bearingDeg(a, b) {
+  const φ1 = a[0] * Math.PI / 180, φ2 = b[0] * Math.PI / 180;
+  const Δλ = (b[1] - a[1]) * Math.PI / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+function setSpeedometer(kmh) {
+  const el = $("speedo");
+  if (!el) return;
+  if (kmh == null) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  $("speedo-num").textContent = String(Math.round(kmh));
+}
+
+// ============ Groene-golf ============
+// Voor opeenvolgende slimme lichten: zijn ze allemaal groen bij aankomst?
+// Als ja, teken een groene streep over dat route-segment.
+function detectGreenwaveSegments(route, fromM) {
+  if (!route.signals) return [];
+  const segments = [];
+  let runStart = -1, runFrom = 0;
+  for (let i = 0; i < route.signals.length; i++) {
+    const s = route.signals[i];
+    if (s.distM <= fromM) continue;
+    if (!s.smart) {
+      if (runStart >= 0 && i - runStart >= 2) {
+        segments.push({ fromM: runFrom, toM: route.signals[i - 1].distM });
+      }
+      runStart = -1;
+      continue;
+    }
+    const eta = aiTimeToReach(route, fromM, s.distM);
+    const arr = predictAtArrival(s.offsetS, eta);
+    if (arr.color === "green") {
+      if (runStart < 0) { runStart = i; runFrom = s.distM; }
+    } else {
+      if (runStart >= 0 && i - runStart >= 2) {
+        segments.push({ fromM: runFrom, toM: route.signals[i - 1].distM });
+      }
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0 && route.signals.length - runStart >= 2) {
+    segments.push({ fromM: runFrom, toM: route.signals[route.signals.length - 1].distM });
+  }
+  return segments;
+}
+function renderGreenwave(route) {
+  // Verwijder vorige
+  if (route._gwLayers) {
+    for (const l of route._gwLayers) map.removeLayer(l);
+  }
+  route._gwLayers = [];
+  if (route !== state.routes[state.activeRouteIdx]) return;
+  const segments = detectGreenwaveSegments(route, state.drivePos);
+  for (const seg of segments) {
+    const pts = [];
+    // Sample punten op de route binnen het segment
+    const nSamples = 20;
+    for (let i = 0; i <= nSamples; i++) {
+      const d = seg.fromM + ((seg.toM - seg.fromM) * i) / nSamples;
+      pts.push(pointAtDistance(route.coords, route.cumDist, d));
+    }
+    const line = L.polyline(pts, {
+      color: "#34c759", weight: 8, opacity: 0.55,
+      lineCap: "round", lineJoin: "round",
+      className: "greenwave-glow",
+    });
+    line.addTo(map);
+    route._gwLayers.push(line);
+  }
 }
 
 // ============ Route drawing ============
@@ -952,11 +1218,19 @@ async function planRoute() {
 
     setLoading("Stoplichten ophalen…");
     const allCoords = routes.flatMap(r => r.coords);
-    const rawSignals = await fetchSignalsBbox(bboxOfCoords(allCoords));
+    const bbox = bboxOfCoords(allCoords);
+    let rawSignals = cacheGet("signals", bbox);
+    if (!rawSignals) {
+      rawSignals = await fetchSignalsBbox(bbox);
+      cacheSet("signals", bbox, rawSignals);
+    }
 
     for (const r of routes) {
       r.signals = filterSignalsToRoute(rawSignals, r.coords, r.cumDist);
     }
+
+    // Weer ophalen vanaf bestemming (achtergrond)
+    refreshWeather(points[points.length - 1].lat, points[points.length - 1].lon);
 
     // Snelheidslimieten halen we ASYNC op zodat de UI niet wacht.
     // Tot ze binnen zijn gebruiken we een fallback (50 / 25 / 5 km/u).
@@ -1010,18 +1284,40 @@ function tick() {
     const dt = tick._lastTickMs ? Math.min(1, (now - tick._lastTickMs) / 1000) : 0;
     tick._lastTickMs = now;
     const v = aiSpeedAt(state.drivePos, r);
+    const prevPos = state.drivePos;
     state.drivePos = Math.min(r.distance, state.drivePos + v * dt);
+
+    // Adaptief leren: detecteer als we een licht passeerden tijdens rood/geel
+    if (r.signals) {
+      for (const s of r.signals) {
+        if (s.distM > prevPos && s.distM <= state.drivePos && s.smart) {
+          const ph = phaseAt(s.offsetS);
+          // Bij naderen werd het advies al gegeven; nu loggen we de
+          // werkelijke fase op het moment van passage als "ervaring".
+          const wait = ph.color === "red" ? ph.secondsLeft : ph.color === "amber" ? 1 : 0;
+          recordObservedWait(s.id, wait);
+        }
+      }
+    }
+
     if (state.drivePos >= r.distance) {
       state.driving = false;
       tick._lastTickMs = null;
       $("drive-toggle").textContent = "Start rit";
+      $("drive-stop").classList.add("hidden");
+      releaseWakeLock();
       finishDrive();
     }
     const p = pointAtDistance(r.coords, r.cumDist, state.drivePos);
     if (state.driver) state.driver.setLatLng(p);
     if (state.driving && !state.followGps) map.panTo(p, { animate: false });
+    // Heading: kijk 25m vooruit
+    const lookAhead = pointAtDistance(r.coords, r.cumDist, Math.min(r.distance, state.drivePos + 25));
+    setDriverHeading(bearingDeg(p, lookAhead));
+    setSpeedometer(v * 3.6);
   } else {
     tick._lastTickMs = null;
+    setSpeedometer(null);
   }
   // Realistische "huidige snelheid" voor GLOSA en upcoming-ETAs
   const speed = state.driving ? aiSpeedAt(state.drivePos, r) : avgSpeedMS();
@@ -1069,7 +1365,11 @@ function tick() {
         if (tip && tip.feasible) {
           const targetKmh = Math.round(tip.v * 3.6);
           const diff = targetKmh - currentKmh;
-          if (Math.abs(diff) <= 2) {
+          // Coast-to-light: als doelsnelheid lager is en huidige is al boven
+          // het doel, suggereer rollend uitlopen
+          if (diff < -5 && nowPh.color === "red") {
+            setGlosa(`💨 Gas los — rol uit naar ${targetKmh} km/u, dan groen`, "ok");
+          } else if (Math.abs(diff) <= 2) {
             setGlosa(`Hou ~${currentKmh} km/u aan — groen bij aankomst`, "ok");
           } else if (diff > 0) {
             setGlosa(`Versnel naar ${targetKmh} km/u (nu ${currentKmh}, max ${limKmh})`, "ok");
@@ -1108,6 +1408,12 @@ function tick() {
     renderEta();
     updateCompactSummary();
   }
+  // Greenwave update minder vaak
+  const tg = Math.floor(performance.now() / 1500);
+  if (tg !== tick._lastGw) {
+    tick._lastGw = tg;
+    renderGreenwave(r);
+  }
 }
 function startTickLoop() {
   function loop() {
@@ -1119,26 +1425,52 @@ function startTickLoop() {
 }
 
 function finishDrive() {
-  // Verzamel stats van wat de driver passeerde
   const r = state.routes[state.activeRouteIdx];
   if (!r) return;
-  const dur = (Date.now() / 1000) - state.driveStats.startedAt;
+  const dur = (Date.now() / 1000) - (state.driveStats?.startedAt || Date.now() / 1000);
   const passed = r.signals.filter(s => s.distM <= state.drivePos);
   let red = 0, green = 0, amber = 0, classic = 0;
   for (const s of passed) {
     if (!s.smart) { classic++; continue; }
-    const eta = s.distM / avgSpeedMS();
+    const eta = s.distM / Math.max(1, avgSpeedMS());
     const ph = predictAtArrival(s.offsetS, -dur + eta);
     if (ph.color === "red") red++;
     else if (ph.color === "green") green++;
     else if (ph.color === "amber") amber++;
   }
+  const co2g = (EMISSIONS[state.profile]?.co2_g_per_km || 0) * (r.distance / 1000);
   $("stat-distance").textContent = fmtDistance(r.distance);
   $("stat-duration").textContent = fmtDuration(dur);
   $("stat-lights").textContent = passed.length;
   $("stat-red").textContent = red;
   $("stat-green").textContent = green;
+  $("stat-co2").textContent = fmtCo2(co2g);
   $("stats-modal").classList.remove("hidden");
+  // Confetti als de meerderheid groen was
+  const totalSmart = red + green + amber;
+  if (totalSmart > 0 && green / totalSmart > 0.7) fireConfetti(2200);
+}
+
+// Stop een rit volledig: simulatie uit, kaart leeg, terug naar zoek-state.
+function stopRit() {
+  state.driving = false;
+  tick._lastTickMs = null;
+  releaseWakeLock();
+  $("drive-toggle").textContent = "Start rit";
+  $("drive-stop").classList.add("hidden");
+  setSpeedometer(null);
+  $("speed-sign").classList.add("hidden");
+  setGlosa(null);
+  clearAll();
+  $("sheet").classList.add("hidden");
+  $("share-btn").disabled = true;
+  setSidebarCompact(false);
+  // URL opschonen
+  const url = new URL(window.location.href);
+  ["from", "to", "via", "p"].forEach(p => url.searchParams.delete(p));
+  window.history.replaceState(null, "", url.toString());
+  // Inputs leeg
+  getWaypointInputs().forEach(i => i.value = "");
 }
 
 // ============ Suggestions ============
@@ -1363,15 +1695,21 @@ $("drive-toggle").addEventListener("click", () => {
     state.driving = false;
     tick._lastTickMs = null;
     $("drive-toggle").textContent = "Hervat";
+    releaseWakeLock();
   } else {
     state.driving = true;
-    tick._lastTickMs = null; // begin met dt=0 zodat positie niet verspringt
-    state.driveStats = { startedAt: Date.now() / 1000 };
+    tick._lastTickMs = null;
+    if (!state.driveStats?.startedAt) state.driveStats = { startedAt: Date.now() / 1000 };
     $("drive-toggle").textContent = "Pauze";
+    $("drive-stop").classList.remove("hidden");
+    requestWakeLock();
   }
 });
+$("drive-stop").addEventListener("click", stopRit);
 $("theme-toggle").addEventListener("click", () => {
-  applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+  const cur = document.documentElement.dataset.theme || "dark";
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length];
+  applyTheme(next);
 });
 $("voice-toggle").addEventListener("click", () => {
   state.voiceOn = !state.voiceOn;
@@ -1418,12 +1756,74 @@ $("api-save").addEventListener("click", () => {
   state.apiBase = v;
   showToast("Opgeslagen.");
 });
-$("stats-close").addEventListener("click", () => $("stats-modal").classList.add("hidden"));
-
 map.on("zoomend moveend", refreshCityLightsDebounced);
 
 document.addEventListener("click", (e) => {
   if (!e.target.closest(".search-box")) hideSuggestions();
+  if (!e.target.closest(".map-menu")) $("map-menu").classList.add("hidden");
+});
+
+// Long-press / right-click op kaart → menu om vertrek/tussen/bestemming te zetten
+map.on("contextmenu", (e) => {
+  const menu = $("map-menu");
+  menu.style.left = `${e.containerPoint.x + 6}px`;
+  menu.style.top = `${e.containerPoint.y + 6}px`;
+  menu.classList.remove("hidden");
+  menu._latlng = e.latlng;
+});
+$("map-menu").addEventListener("click", async (e) => {
+  const role = e.target.dataset.role;
+  if (!role) return;
+  const ll = $("map-menu")._latlng;
+  $("map-menu").classList.add("hidden");
+  if (!ll) return;
+  try {
+    const url = `${NOMINATIM_REV}?format=json&lat=${ll.lat}&lon=${ll.lng}&zoom=16`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const json = await res.json();
+    const label = json.display_name?.split(",").slice(0, 3).join(",").trim() || `${ll.lat.toFixed(4)},${ll.lng.toFixed(4)}`;
+    const inputs = getWaypointInputs();
+    if (role === "from") inputs[0].value = label;
+    else if (role === "to") inputs[inputs.length - 1].value = label;
+    else if (role === "via") {
+      addStop();
+      const all = getWaypointInputs();
+      all[all.length - 2].value = label;
+    }
+    setSidebarCompact(false);
+  } catch {}
+});
+
+// Toetsenbord-shortcuts
+document.addEventListener("keydown", (e) => {
+  // Niet hijacken in zoekvelden
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === " ") { e.preventDefault(); $("drive-toggle").click(); }
+  else if (e.key === "s" || e.key === "S") { e.preventDefault(); if (state.routes.length) stopRit(); }
+  else if (e.key === "r" || e.key === "R") { e.preventDefault(); $("drive-stop")?.click(); }
+  else if (e.key === "l" || e.key === "L") { $("follow-gps").click(); }
+  else if (e.key === "m" || e.key === "M") { $("theme-toggle").click(); }
+  else if (e.key === "v" || e.key === "V") { $("voice-toggle").click(); }
+  else if (e.key === "/") { e.preventDefault(); getWaypointInputs()[0]?.focus(); }
+});
+
+// Error-overlay
+function showError(text) {
+  $("error-text").textContent = text;
+  $("error-overlay").classList.remove("hidden");
+}
+window.addEventListener("error", (e) => {
+  showError(`${e.message}\n\n${e.error?.stack || ""}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  showError(`Promise rejected: ${e.reason?.message || e.reason}\n\n${e.reason?.stack || ""}`);
+});
+$("error-close")?.addEventListener("click", () => $("error-overlay").classList.add("hidden"));
+$("error-copy")?.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("error-text").textContent); showToast("Gekopieerd."); } catch {}
+});
+$("stats-close").addEventListener("click", () => {
+  $("stats-modal").classList.add("hidden");
 });
 
 // ============ Boot ============
