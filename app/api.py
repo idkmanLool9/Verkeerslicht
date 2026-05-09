@@ -93,4 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def index():
             return FileResponse(STATIC_DIR / "index.html")
 
+        @app.get("/app.js")
+        def app_js():
+            return FileResponse(STATIC_DIR / "app.js", media_type="text/javascript")
+
     return app

@@ -91,6 +91,29 @@ account.
   zetten deze om naar epoch met de aanname dat de klok gelijk loopt met
   de bron; bij grote klokafwijking kan de aftelling tot ~1 uur verspringen.
 
+## Deploy naar GitHub Pages
+
+GitHub Pages serveert alleen statische bestanden, dus alleen de **demomodus**
+(JS-simulator in de browser) draait daar - geen MQTT, geen live UDAP-data.
+Voor live data heb je een server nodig (Fly.io, Render, eigen VPS, etc.).
+
+Setup:
+
+1. Push deze repo naar GitHub.
+2. Open in GitHub: **Settings → Pages**, en zet **Source** op
+   *GitHub Actions*.
+3. De workflow `.github/workflows/pages.yml` bouwt en publiceert
+   `static/` bij elke push naar `main` of de feature-branch. Je kunt hem
+   ook handmatig draaien via **Actions → Deploy verkeerslicht-demo →
+   Run workflow**.
+4. Na ~1 min staat de demo op
+   `https://<gebruiker>.github.io/<repo>/`.
+
+De pagina detecteert vanzelf of er een backend is: bestaat `/api/health`,
+dan praat hij met de FastAPI; zo niet, dan draait er een browser-side
+40-seconden cyclus (groen 15s, geel 3s, rood 22s) zodat je de UI kunt
+zien.
+
 ## Andere bronnen
 
 - **NDW Open Data Portal** (<https://opendata.ndw.nu>) - historische en

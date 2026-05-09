@@ -11,7 +11,13 @@
     }
     body { margin: 0; padding: 2rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
     h1 { margin: 0; font-size: 1.4rem; }
-    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+    .mode {
+      font-size: 0.85rem; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: #2a2a2a; color: #ddd;
+    }
+    .mode.live   { background: #1b5e20; color: #fff; }
+    .mode.demo   { background: #5d4037; color: #fff; }
+    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; align-items: center; }
     input { padding: 0.4rem 0.6rem; font-size: 1rem; width: 7rem; }
     .light {
       width: 140px; height: 360px;
@@ -30,63 +36,37 @@
     .countdown { font-size: 2rem; font-weight: 600; }
     .meta { opacity: 0.7; font-size: 0.85rem; }
     .error { color: #e53935; }
+    footer { margin-top: 1rem; font-size: 0.8rem; opacity: 0.6; max-width: 36rem; text-align: center; }
+    a { color: inherit; }
   </style>
 </head>
 <body>
   <h1>Verkeerslicht-status</h1>
+  <div id="mode" class="mode">Modus laden…</div>
+
   <div class="controls">
     <label>Kruising <input id="ix" type="number" value="9999" /></label>
     <label>Signaalgroep <input id="sg" type="number" value="1" /></label>
   </div>
+
   <div class="light" aria-label="verkeerslicht">
     <div id="red"   class="lamp red"></div>
     <div id="amber" class="lamp amber"></div>
     <div id="green" class="lamp green"></div>
   </div>
+
   <div class="info">
     <div class="countdown"><span id="countdown">--</span> s</div>
     <div id="phase" class="meta">--</div>
     <div id="meta"  class="meta"></div>
   </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
+  <footer>
+    Bron-formaat: SAE J2735 / ISO TS 19091 SPaT-berichten via NDW Talking Traffic /
+    UDAP. Op GitHub Pages draait alleen de demosimulator; voor live data is een
+    backend nodig (zie <a href="https://github.com/idkmanLool9/Verkeerslicht">README</a>).
+  </footer>
 
-    function setLamp(color) {
-      for (const k of ["red", "amber", "green"]) {
-        $(k).classList.remove("on");
-      }
-      if (color === "red" || color === "red-amber" || color === "stop-Then-Proceed") $("red").classList.add("on");
-      if (color === "amber" || color === "red-amber") $("amber").classList.add("on");
-      if (color === "green") $("green").classList.add("on");
-    }
-
-    async function poll() {
-      const ix = encodeURIComponent($("ix").value);
-      const sg = encodeURIComponent($("sg").value);
-      try {
-        const res = await fetch(`/api/signals/${ix}/${sg}`);
-        if (!res.ok) {
-          $("phase").textContent = `Geen data (HTTP ${res.status})`;
-          $("phase").className = "meta error";
-          setLamp("unknown");
-          return;
-        }
-        const data = await res.json();
-        setLamp(data.color);
-        $("phase").className = "meta";
-        $("phase").textContent = `Fase: ${data.phase} (${data.color})`;
-        const secs = data.seconds_until_change;
-        $("countdown").textContent = secs == null ? "--" : secs.toFixed(1);
-        $("meta").textContent = `Bron-update: ${data.age_seconds.toFixed(1)}s geleden`;
-      } catch (e) {
-        $("phase").textContent = `Fout: ${e.message}`;
-        $("phase").className = "meta error";
-      }
-    }
-
-    setInterval(poll, 500);
-    poll();
-  </script>
+  <script src="./app.js"></script>
 </body>
 </html>
