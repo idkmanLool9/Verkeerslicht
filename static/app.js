@@ -124,6 +124,7 @@ const state = {
   spokenLightIds: new Set(),
   driveStats: { lights: 0, red: 0, amber: 0, green: 0, classic: 0, startedAt: 0 },
   apiBase: localStorage.getItem("verkeerslicht.apiBase") || "",
+  vehicle: loadVehicle(),
 };
 
 // ============ Theme ============
@@ -343,13 +344,104 @@ async function refreshWeather(lat, lon) {
 
 // ============ CO2 / verbruik ============
 const EMISSIONS = {
-  driving: { co2_g_per_km: 120, label: "auto (benzine)" },
+  driving: { co2_g_per_km: 120, label: "auto (gemiddeld)" },
   cycling: { co2_g_per_km: 0,   label: "fiets" },
   foot:    { co2_g_per_km: 0,   label: "lopen" },
+};
+const FUEL_DEFAULT_CO2 = {
+  benzine: 120, diesel: 130, lpg: 110, cng: 100,
+  elektriciteit: 50, hybride: 80, waterstof: 30, alcohol: 100,
 };
 function fmtCo2(grams) {
   if (grams < 1000) return `${Math.round(grams)} g`;
   return `${(grams / 1000).toFixed(1)} kg`;
+}
+
+// ============ Voertuig (RDW) ============
+const RDW_VEHICLE = "https://opendata.rdw.nl/resource/m9d7-ebf2.json";
+const RDW_FUEL    = "https://opendata.rdw.nl/resource/8ys7-d773.json";
+const VEHICLE_KEY = "verkeerslicht.vehicle";
+
+function normalizeKenteken(s) {
+  return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").substring(0, 8);
+}
+function formatKenteken(s) {
+  const k = normalizeKenteken(s);
+  if (k.length <= 2) return k;
+  if (k.length <= 4) return `${k.slice(0, 2)}-${k.slice(2)}`;
+  if (k.length <= 6) return `${k.slice(0, 2)}-${k.slice(2, 4)}-${k.slice(4)}`;
+  return `${k.slice(0, 2)}-${k.slice(2, 4)}-${k.slice(4, 6)}-${k.slice(6)}`;
+}
+function loadVehicle() {
+  try { return JSON.parse(localStorage.getItem(VEHICLE_KEY) || "null"); } catch { return null; }
+}
+function saveVehicle(v) {
+  try { localStorage.setItem(VEHICLE_KEY, JSON.stringify(v)); } catch {}
+}
+function clearVehicle() { localStorage.removeItem(VEHICLE_KEY); }
+
+async function fetchVehicleByKenteken(kenteken) {
+  const k = normalizeKenteken(kenteken);
+  if (!k) throw new Error("Geen kenteken");
+  const [base, fuel] = await Promise.all([
+    fetch(`${RDW_VEHICLE}?kenteken=${k}`).then(r => r.json()).catch(() => []),
+    fetch(`${RDW_FUEL}?kenteken=${k}`).then(r => r.json()).catch(() => []),
+  ]);
+  if (!base.length) throw new Error("Kenteken niet gevonden");
+  const v = base[0];
+  const f = fuel[0] || {};
+  const num = (x) => (x == null || x === "") ? null : parseFloat(x);
+  return {
+    kenteken: k,
+    merk: (v.merk || "").trim(),
+    model: (v.handelsbenaming || "").trim(),
+    kleur: (v.eerste_kleur || "").trim(),
+    bouwjaar: v.datum_eerste_toelating ? String(v.datum_eerste_toelating).substring(0, 4) : null,
+    brandstof: (f.brandstof_omschrijving || "").toLowerCase().trim(),
+    co2: num(v.co2_uitstoot_gecombineerd) ?? num(f.uitstoot_co2_gecombineerd) ?? null,
+    massa: num(v.massa_rijklaar) ?? num(v.massa_ledig_voertuig) ?? null,
+    maxSpeedKmh: num(v.maximum_constructie_snelheid) ?? null,
+    elektrischKwhPer100km: num(f.elektrisch_verbruik_extern_opladen_wltp) ?? null,
+    catalogusprijs: num(v.catalogusprijs) ?? null,
+  };
+}
+
+async function fetchVehiclePhoto(merk, model) {
+  if (!merk) return null;
+  const queries = [
+    `${merk} ${model || ""}`.trim(),
+    merk,
+  ];
+  for (const q of queries) {
+    try {
+      const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&titles=${encodeURIComponent(q)}&prop=pageimages&pithumbsize=600&redirects=1`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const pages = json.query?.pages || {};
+      for (const p of Object.values(pages)) {
+        if (p.thumbnail?.source) return p.thumbnail.source;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function ecoBand(co2) {
+  if (co2 == null) return null;
+  if (co2 < 50) return "A";
+  if (co2 < 100) return "B";
+  if (co2 < 140) return "C";
+  if (co2 < 180) return "D";
+  return "E";
+}
+function vehicleCo2PerKm(vehicle) {
+  if (!vehicle) return null;
+  if (vehicle.co2 != null && vehicle.co2 > 0) return vehicle.co2;
+  if (vehicle.brandstof) {
+    return FUEL_DEFAULT_CO2[vehicle.brandstof] ?? 120;
+  }
+  return null;
 }
 
 // ============ Confetti ============
@@ -592,12 +684,19 @@ function aiSpeedAt(distM, route) {
     }
   }
   const wf = weatherFactor(currentWeather);
+  // Voertuig-cap: brommer/scootmobiel/etc. mogen niet 100 rijden
+  const vehMax = state.vehicle?.maxSpeedKmh;
+  let v;
   if (speedKmh == null) {
-    // Fallback: route-gemiddelde uit OSRM
     const osrmKmh = (route.distance / route.duration) * 3.6;
-    return Math.max(2, (osrmKmh / 3.6) * rushHourFactor() * wf);
+    v = (osrmKmh / 3.6) * rushHourFactor() * wf;
+  } else {
+    v = (speedKmh / 3.6) * factor * rushHourFactor() * wf;
   }
-  return Math.max(2, (speedKmh / 3.6) * factor * rushHourFactor() * wf);
+  if (vehMax && vehMax > 0) {
+    v = Math.min(v, (vehMax / 3.6) * 0.95);
+  }
+  return Math.max(2, v);
 }
 
 // Geïntegreerde reistijd over [fromM, toM] op realistische snelheid.
@@ -1438,7 +1537,10 @@ function finishDrive() {
     else if (ph.color === "green") green++;
     else if (ph.color === "amber") amber++;
   }
-  const co2g = (EMISSIONS[state.profile]?.co2_g_per_km || 0) * (r.distance / 1000);
+  const co2PerKm = state.profile === "driving"
+    ? (vehicleCo2PerKm(state.vehicle) ?? EMISSIONS.driving.co2_g_per_km)
+    : (EMISSIONS[state.profile]?.co2_g_per_km || 0);
+  const co2g = co2PerKm * (r.distance / 1000);
   $("stat-distance").textContent = fmtDistance(r.distance);
   $("stat-duration").textContent = fmtDuration(dur);
   $("stat-lights").textContent = passed.length;
@@ -1826,9 +1928,135 @@ $("stats-close").addEventListener("click", () => {
   $("stats-modal").classList.add("hidden");
 });
 
+// ============ Voertuig UI ============
+function renderVehicleButton() {
+  const v = state.vehicle;
+  const lbl = $("vehicle-label");
+  if (!lbl) return;
+  if (v && v.merk) {
+    lbl.textContent = `${v.merk} ${v.model || ""} ${v.bouwjaar ? `· ${v.bouwjaar}` : ""}`.trim();
+  } else {
+    lbl.textContent = "Mijn auto toevoegen";
+  }
+}
+function openVehicleModal() {
+  $("vehicle-modal").classList.remove("hidden");
+  if (state.vehicle) {
+    $("kenteken-input").value = formatKenteken(state.vehicle.kenteken);
+    showVehicleCard(state.vehicle);
+  } else {
+    $("kenteken-input").value = "";
+    $("vehicle-card").classList.add("hidden");
+    $("vehicle-save").disabled = true;
+  }
+  setTimeout(() => $("kenteken-input").focus(), 50);
+}
+function closeVehicleModal() {
+  $("vehicle-modal").classList.add("hidden");
+  pendingVehicle = null;
+}
+let pendingVehicle = null;
+
+function showVehicleCard(v) {
+  const card = $("vehicle-card");
+  card.classList.remove("hidden");
+  $("v-merk").textContent = v.merk || "–";
+  $("v-model").textContent = v.model || "";
+  $("v-bouwjaar").textContent = v.bouwjaar || "–";
+  $("v-brandstof").textContent = v.brandstof || "–";
+  $("v-kleur").textContent = (v.kleur || "–").toLowerCase();
+  const co2 = vehicleCo2PerKm(v);
+  $("v-co2").textContent = co2 != null ? Math.round(co2) : "–";
+  $("v-maxspeed").textContent = v.maxSpeedKmh ? Math.round(v.maxSpeedKmh) : "–";
+  $("v-massa").textContent = v.massa ? Math.round(v.massa) : "–";
+  // Eco-band
+  const band = ecoBand(co2);
+  const eco = $("v-eco");
+  if (band) {
+    eco.classList.remove("hidden");
+    const badge = eco.querySelector(".eco-badge");
+    badge.className = `eco-badge ${band.toLowerCase()}`;
+    badge.textContent = band;
+  } else {
+    eco.classList.add("hidden");
+  }
+  // Foto
+  const photo = $("vehicle-photo-img");
+  const wrap = photo.parentElement;
+  wrap.classList.remove("has-img");
+  photo.src = "";
+  if (v.photoUrl) {
+    photo.src = v.photoUrl;
+    wrap.classList.add("has-img");
+  } else if (v.merk) {
+    fetchVehiclePhoto(v.merk, v.model).then(url => {
+      if (url) {
+        photo.src = url;
+        wrap.classList.add("has-img");
+        if (pendingVehicle) pendingVehicle.photoUrl = url;
+      }
+    });
+  }
+  $("vehicle-save").disabled = false;
+}
+
+async function lookupVehicle() {
+  const k = $("kenteken-input").value;
+  if (!normalizeKenteken(k)) { showToast("Vul een kenteken in.", "error"); return; }
+  $("vehicle-lookup").disabled = true;
+  $("vehicle-lookup").textContent = "Bezig…";
+  try {
+    const v = await fetchVehicleByKenteken(k);
+    pendingVehicle = v;
+    showVehicleCard(v);
+  } catch (e) {
+    showToast(e.message || "Niet gevonden", "error");
+    $("vehicle-card").classList.add("hidden");
+    $("vehicle-save").disabled = true;
+  } finally {
+    $("vehicle-lookup").disabled = false;
+    $("vehicle-lookup").textContent = "Zoek";
+  }
+}
+
+$("vehicle-btn")?.addEventListener("click", openVehicleModal);
+$("vehicle-close")?.addEventListener("click", closeVehicleModal);
+$("vehicle-lookup")?.addEventListener("click", lookupVehicle);
+$("kenteken-input")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); lookupVehicle(); }
+});
+$("kenteken-input")?.addEventListener("input", (e) => {
+  const cur = e.target.selectionStart;
+  const before = e.target.value;
+  const formatted = formatKenteken(before);
+  e.target.value = formatted;
+  // Behoud cursor
+  e.target.setSelectionRange(formatted.length, formatted.length);
+});
+$("vehicle-save")?.addEventListener("click", () => {
+  const v = pendingVehicle || state.vehicle;
+  if (!v) return;
+  saveVehicle(v);
+  state.vehicle = v;
+  renderVehicleButton();
+  closeVehicleModal();
+  showToast(`${v.merk} ${v.model || ""} opgeslagen.`);
+});
+$("vehicle-clear")?.addEventListener("click", () => {
+  clearVehicle();
+  state.vehicle = null;
+  pendingVehicle = null;
+  renderVehicleButton();
+  $("vehicle-card").classList.add("hidden");
+  $("kenteken-input").value = "";
+  $("vehicle-save").disabled = true;
+  showToast("Voertuig verwijderd.");
+});
+
 // ============ Boot ============
 setMode("Demo", "demo");
 renderHistory();
+renderVehicleButton();
 startTickLoop();
 setTimeout(tryAutoplanFromUrl, 100);
 

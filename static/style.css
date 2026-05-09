@@ -253,6 +253,155 @@ html[data-theme="light"] .mode-pills { background: rgba(0,0,0,0.04); }
   color: #0a0e14;
 }
 
+/* Mijn-auto knop */
+.vehicle-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(255, 204, 0, 0.07);
+  border: 1px solid rgba(255, 204, 0, 0.25);
+  border-radius: 12px;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  transition: background 120ms;
+}
+.vehicle-btn:hover { background: rgba(255, 204, 0, 0.14); }
+.vehicle-icon { font-size: 1.1rem; }
+.vehicle-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vehicle-edit { color: var(--text-mute); font-size: 1rem; }
+
+/* Voertuig-modal */
+.vehicle-modal-card { max-width: 26rem; }
+.modal-sub {
+  margin: -0.3rem 0 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-mute);
+  line-height: 1.4;
+}
+.kenteken-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.kenteken-input {
+  flex: 1;
+  background: #ffd400;
+  color: #000;
+  border: 3px solid #000;
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  font-family: "Inter", sans-serif;
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.05em;
+  text-align: center;
+  text-transform: uppercase;
+  outline: none;
+  font-variant: small-caps;
+}
+.kenteken-input::placeholder { color: rgba(0,0,0,0.35); }
+.kenteken-input:focus { box-shadow: 0 0 0 3px rgba(255,212,0,0.35); }
+
+.vehicle-card {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 0.85rem;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.7rem;
+}
+html[data-theme="light"] .vehicle-card { background: rgba(0,0,0,0.03); }
+.vehicle-photo {
+  position: relative;
+  width: 110px; height: 70px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.25);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--text-mute);
+}
+html[data-theme="light"] .vehicle-photo { background: rgba(0,0,0,0.06); }
+.vehicle-photo img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: none;
+}
+.vehicle-photo.has-img img { display: block; }
+.vehicle-photo.has-img .vehicle-photo-fallback { display: none; }
+.vehicle-photo-fallback { padding: 1rem; }
+
+.vehicle-info { min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.vehicle-name {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.vehicle-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-transform: lowercase;
+}
+.vehicle-stats {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.15rem;
+}
+.vehicle-stats > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-size: 0.7rem;
+  color: var(--text-mute);
+}
+.vehicle-stats b {
+  font-size: 0.95rem;
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.vehicle-eco {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+.eco-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 1.4rem; height: 1.4rem;
+  border-radius: 6px;
+  background: var(--green);
+  color: #000;
+  font-weight: 900;
+  font-size: 0.85rem;
+}
+.eco-badge.b { background: #b8e986; }
+.eco-badge.c { background: #fdd835; }
+.eco-badge.d { background: #ff9800; color: #fff; }
+.eco-badge.e { background: var(--red); color: #fff; }
+.eco-text { font-size: 0.78rem; color: var(--text-dim); }
+
+.vehicle-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 /* Search */
 .search-box {
   display: flex;

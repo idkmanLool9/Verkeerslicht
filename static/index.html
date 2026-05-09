@@ -49,6 +49,13 @@
       <button class="pill" data-profile="foot">🚶 lopen</button>
     </div>
 
+    <!-- Mijn auto (kenteken) -->
+    <button class="vehicle-btn" id="vehicle-btn">
+      <span class="vehicle-icon">🚗</span>
+      <span class="vehicle-label" id="vehicle-label">Mijn auto toevoegen</span>
+      <span class="vehicle-edit">›</span>
+    </button>
+
     <div class="search-box">
       <div id="waypoints">
         <div class="search-row" data-role="from">
@@ -193,6 +200,46 @@
         <div><span class="stat-num" id="stat-co2">–</span><span class="stat-label">CO₂</span></div>
       </div>
       <button id="stats-close" class="btn btn-primary btn-block">Sluiten</button>
+    </div>
+  </div>
+
+  <!-- Voertuig-modal -->
+  <div id="vehicle-modal" class="modal hidden">
+    <div class="modal-card vehicle-modal-card">
+      <div class="modal-title">Mijn auto</div>
+      <p class="modal-sub">Vul je kenteken in. We gebruiken de open data van RDW voor model en uitstoot — niets wordt naar een server gestuurd.</p>
+      <div class="kenteken-row">
+        <input id="kenteken-input" class="kenteken-input" type="text" placeholder="AB-12-CD" maxlength="10" autocomplete="off" inputmode="latin" />
+        <button id="vehicle-lookup" class="btn btn-primary btn-compact">Zoek</button>
+      </div>
+      <div id="vehicle-card" class="vehicle-card hidden">
+        <div class="vehicle-photo">
+          <img id="vehicle-photo-img" alt="" />
+          <div class="vehicle-photo-fallback">
+            <svg viewBox="0 0 64 32" width="100%"><path d="M8 24 L12 14 Q14 10 18 10 L46 10 Q50 10 52 14 L56 24 L8 24 Z M14 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0 M42 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0" fill="currentColor"/></svg>
+          </div>
+        </div>
+        <div class="vehicle-info">
+          <div class="vehicle-name"><span id="v-merk">–</span> <span id="v-model">–</span></div>
+          <div class="vehicle-meta">
+            <span id="v-bouwjaar">–</span> · <span id="v-brandstof">–</span> · <span id="v-kleur">–</span>
+          </div>
+          <div class="vehicle-stats">
+            <div><b id="v-co2">–</b><span>g CO₂/km</span></div>
+            <div><b id="v-maxspeed">–</b><span>km/u max</span></div>
+            <div><b id="v-massa">–</b><span>kg</span></div>
+          </div>
+          <div id="v-eco" class="vehicle-eco hidden">
+            <span class="eco-badge">A</span>
+            <span class="eco-text">Eco-score</span>
+          </div>
+        </div>
+      </div>
+      <div class="vehicle-actions">
+        <button id="vehicle-clear" class="btn btn-ghost btn-compact">Verwijderen</button>
+        <button id="vehicle-save" class="btn btn-primary btn-compact" disabled>Opslaan</button>
+        <button id="vehicle-close" class="btn btn-ghost btn-compact">Sluiten</button>
+      </div>
     </div>
   </div>
 
