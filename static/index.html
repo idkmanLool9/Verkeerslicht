@@ -22,10 +22,11 @@
   <!-- Sidebar (links-boven) -->
   <aside class="sidebar">
     <header class="sidebar-head">
-      <div class="brand">
+      <button id="expand-toggle" class="brand brand-toggle" title="Inklappen / uitvouwen">
         <span class="brand-dot"></span>
         <span class="brand-name">Verkeerslicht</span>
-      </div>
+        <span class="brand-chev">▾</span>
+      </button>
       <div class="head-actions">
         <button class="icon-btn" id="theme-toggle" title="Thema wisselen">🌙</button>
         <button class="icon-btn" id="voice-toggle" title="Spraakaankondiging">🔇</button>
@@ -33,6 +34,13 @@
         <div id="mode" class="mode">demo</div>
       </div>
     </header>
+
+    <!-- Compacte samenvatting (alleen zichtbaar als sidebar compact is) -->
+    <div class="compact-summary">
+      <span id="cs-time">--:--</span> ·
+      <span id="cs-dist">– km</span> ·
+      <span id="cs-lights">0 lichten</span>
+    </div>
 
     <!-- Transport mode -->
     <div class="mode-pills">

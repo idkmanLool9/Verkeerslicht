@@ -286,19 +286,25 @@ async function fetchSignalsBbox(bbox) {
   return json.elements ?? [];
 }
 
-// Snelheidslimieten van OSM-ways langs de route. We samplen de route
-// elke ~stride meter en doen een Overpass `around:`-query. Levert ways
-// met maxspeed-tag terug; daarna projecteren we ze op de route.
+// Snelheidslimieten — query Overpass alleen rond de bekende stoplichten
+// (daar doet GLOSA er iets mee) plus een paar route-samples voor lange
+// stukken zonder lichten. Veel kleiner dan de hele route afdekken.
 async function fetchMaxspeedAlongRoute(route) {
-  const stride = Math.max(150, Math.ceil(route.distance / 150));
-  const samples = [];
-  for (let d = 0; d < route.distance; d += stride) {
-    samples.push(pointAtDistance(route.coords, route.cumDist, d));
-    if (samples.length >= 200) break;
+  const signals = route.signals || [];
+  let pts = [];
+  if (signals.length) {
+    pts = signals.slice(0, 80).map(s => [s.lat, s.lon]);
   }
-  if (!samples.length) return [];
-  const around = samples.map(([lat, lon]) => `${lat.toFixed(5)},${lon.toFixed(5)}`).join(",");
-  const query = `[out:json][timeout:30];way["highway"]["maxspeed"](around:25,${around});out tags geom;`;
+  // Vul aan met een paar route-samples zodat ook lange stukken zonder
+  // lichten een limiet krijgen.
+  const desiredSamples = Math.min(20, Math.max(4, Math.ceil(route.distance / 5000)));
+  const stride = route.distance / desiredSamples;
+  for (let d = stride / 2; d < route.distance && pts.length < 100; d += stride) {
+    pts.push(pointAtDistance(route.coords, route.cumDist, d));
+  }
+  if (!pts.length) return [];
+  const around = pts.map(([lat, lon]) => `${lat.toFixed(5)},${lon.toFixed(5)}`).join(",");
+  const query = `[out:json][timeout:15];way["highway"]["maxspeed"](around:120,${around});out tags geom;`;
   try {
     const res = await fetch(OVERPASS, {
       method: "POST",
@@ -374,6 +380,15 @@ function lowestLimitBetween(intervals, fromM, toM, fallback = 50) {
     if (iv.speed < lim) lim = iv.speed;
   }
   return lim === Infinity ? fallback : lim;
+}
+
+// Fire-and-forget loader; vult r.limitIntervals zodra de data binnen is.
+function backgroundLoadLimits(routes) {
+  for (const r of routes) {
+    fetchMaxspeedAlongRoute(r)
+      .then((ways) => { r.limitIntervals = buildSpeedIntervals(ways, r); })
+      .catch(() => { r.limitIntervals = []; });
+  }
 }
 function bboxOfCoords(coords, padDeg = 0.005) {
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
@@ -627,6 +642,19 @@ function setSpeedSign(kmh) {
   el.classList.remove("hidden");
   $("speed-sign-num").textContent = String(Math.round(kmh));
 }
+function setSidebarCompact(compact) {
+  document.querySelector(".sidebar").classList.toggle("compact", compact);
+}
+function updateCompactSummary() {
+  const r = state.routes[state.activeRouteIdx];
+  if (!r) return;
+  const speed = avgSpeedMS();
+  const remain = Math.max(0, r.distance - state.drivePos);
+  const remainS = remain / speed;
+  const cs1 = $("cs-time"); if (cs1) cs1.textContent = fmtClock(new Date(Date.now() + remainS * 1000));
+  const cs2 = $("cs-dist"); if (cs2) cs2.textContent = fmtDistance(remain);
+  const cs3 = $("cs-lights"); if (cs3) cs3.textContent = `${r.signals.length} lichten`;
+}
 
 function renderRouteList() {
   const list = $("routes-list");
@@ -753,11 +781,10 @@ async function planRoute() {
       r.signals = filterSignalsToRoute(rawSignals, r.coords, r.cumDist);
     }
 
-    setLoading("Snelheidslimieten ophalen…");
-    const limitWaysPerRoute = await Promise.all(routes.map(fetchMaxspeedAlongRoute));
-    routes.forEach((r, i) => {
-      r.limitIntervals = buildSpeedIntervals(limitWaysPerRoute[i], r);
-    });
+    // Snelheidslimieten halen we ASYNC op zodat de UI niet wacht.
+    // Tot ze binnen zijn gebruiken we een fallback (50 / 25 / 5 km/u).
+    routes.forEach(r => { r.limitIntervals = []; });
+    backgroundLoadLimits(routes);
 
     clearAll();
     state.routes = routes;
@@ -788,6 +815,8 @@ async function planRoute() {
     saveHistory(values);
     updateShareLink(values);
     $("share-btn").disabled = false;
+    setSidebarCompact(true);
+    updateCompactSummary();
   } catch (e) {
     setLoading(null);
     showToast(e.message ?? String(e), "error");
@@ -887,6 +916,7 @@ function tick() {
     tick._lastT = t;
     renderUpcoming(r.signals, state.drivePos, speed);
     renderEta();
+    updateCompactSummary();
   }
 }
 function startTickLoop() {
@@ -1108,6 +1138,10 @@ function wireSuggestionsForInput(input) {
 }
 document.querySelectorAll(".wp-input").forEach(wireSuggestionsForInput);
 
+$("expand-toggle").addEventListener("click", () => {
+  const sb = document.querySelector(".sidebar");
+  sb.classList.toggle("compact");
+});
 $("plan").addEventListener("click", planRoute);
 $("add-stop").addEventListener("click", addStop);
 $("swap").addEventListener("click", () => {

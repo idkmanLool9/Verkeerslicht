@@ -123,6 +123,42 @@ html[data-theme="light"] .leaflet-control-attribution {
   letter-spacing: -0.01em;
   flex-shrink: 0;
 }
+.brand-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  border-radius: 8px;
+  transition: background 120ms;
+}
+.brand-toggle:hover { background: var(--bg-card-2); }
+.brand-chev {
+  color: var(--text-mute);
+  font-size: 0.7rem;
+  margin-left: 0.15rem;
+  transition: transform 200ms;
+}
+.sidebar.compact .brand-chev { transform: rotate(-90deg); }
+
+/* Compact-state: verberg zware secties, toon alleen brand + samenvatting + routes */
+.compact-summary {
+  display: none;
+  padding: 0 0.2rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sidebar.compact .compact-summary { display: block; }
+.sidebar.compact .mode-pills,
+.sidebar.compact .search-box,
+.sidebar.compact .history,
+.sidebar.compact .legend {
+  display: none !important;
+}
+.sidebar.compact { gap: 0.5rem; }
+.sidebar.compact .routes-list { max-height: 14rem; overflow-y: auto; }
 .brand-dot {
   width: 0.6rem; height: 0.6rem;
   border-radius: 50%;
