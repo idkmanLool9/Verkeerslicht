@@ -339,23 +339,149 @@ function parseMaxspeed(s) {
   return null;
 }
 
-// Bouw [{fromM, toM, speed}, …] door way-geometry op de route te
-// projecteren. Een way overlapt waar zijn punten ≤25m van de route zitten.
+// Bouw [{fromM, toM, speed, roadClass}, …] door way-geometry op de
+// route te projecteren. Een way overlapt waar zijn punten ≤25m van de
+// route zitten. roadClass komt uit de OSM `highway`-tag en wordt door
+// het AI-model gebruikt om realistische snelheden in te schatten.
 function buildSpeedIntervals(ways, route) {
   const intervals = [];
   for (const w of ways) {
     const speed = parseMaxspeed(w.tags?.maxspeed);
     if (speed == null) continue;
+    const cls = w.tags?.highway || "unclassified";
     const ds = [];
     for (const pt of w.geometry || []) {
       const proj = projectOnPolyline([pt.lat, pt.lon], route.coords, route.cumDist);
       if (proj.minD < 25) ds.push(proj.distAlong);
     }
     if (ds.length < 2) continue;
-    intervals.push({ speed, fromM: Math.min(...ds), toM: Math.max(...ds) });
+    intervals.push({ speed, roadClass: cls, fromM: Math.min(...ds), toM: Math.max(...ds) });
   }
   intervals.sort((a, b) => a.fromM - b.fromM);
   return intervals;
+}
+
+// ============ AI-inschatting ============
+// Multi-factor model dat de naïeve gemiddelde snelheid (OSRM) verfijnt
+// met wegtype, tijdstip (spitsuur), en daadwerkelijke voorspelde
+// stoplicht-wachttijden. Doel: realistische ETA + transparant maken
+// welke factoren meespelen.
+const ROAD_SPEED_FACTORS = {
+  motorway:        0.95, motorway_link: 0.85,
+  trunk:           0.90, trunk_link:    0.82,
+  primary:         0.85, primary_link:  0.78,
+  secondary:       0.78, secondary_link:0.73,
+  tertiary:        0.72, tertiary_link: 0.68,
+  unclassified:    0.65,
+  residential:     0.60,
+  living_street:   0.40,
+  service:         0.50,
+  busway:          0.55,
+  cycleway:        0.85,
+  footway:         0.85,
+};
+const ROAD_CLASS_LABELS = {
+  motorway: "snelweg", trunk: "autoweg", primary: "hoofdweg",
+  secondary: "gebiedsweg", tertiary: "buurtontsluiting",
+  residential: "wijkstraat", living_street: "woonerf",
+  unclassified: "lokale weg", service: "ventweg",
+};
+
+function rushHourFactor(date = new Date()) {
+  const day = date.getDay();
+  const h = date.getHours() + date.getMinutes() / 60;
+  if (day === 0 || day === 6) return 0.98;        // weekend
+  if (h >= 7   && h < 9)   return 0.70;            // ochtendspits
+  if (h >= 16  && h < 19)  return 0.65;            // avondspits
+  if (h >= 9   && h < 16)  return 0.92;            // overdag
+  if (h >= 19  && h < 22)  return 0.96;            // avond
+  return 1.0;                                      // nacht
+}
+function rushHourLabel(date = new Date()) {
+  const day = date.getDay();
+  const h = date.getHours();
+  if (day === 0 || day === 6) return "weekend";
+  if (h >= 7   && h < 9)   return "ochtendspits";
+  if (h >= 16  && h < 19)  return "avondspits";
+  if (h >= 9   && h < 16)  return "overdag";
+  if (h >= 19  && h < 22)  return "avond";
+  return "nacht";
+}
+
+// Verwachte wachttijd bij een licht. Slim: gebruik de fase-voorspelling.
+// Klassiek: aanname is 35% kans rood, gemiddelde wachttijd 12s als rood.
+function expectedLightWait(signal, fromM, baseSpeedMS) {
+  if (!signal.smart) return 0.35 * 12;
+  const eta = (signal.distM - fromM) / baseSpeedMS;
+  const ph = predictAtArrival(signal.offsetS, eta);
+  if (ph.color === "red")   return Math.min(ph.secondsLeft, 25);
+  if (ph.color === "amber") return 1;
+  return 0;
+}
+
+// Hoofdfunctie van het model. Levert {durationS, drivingS, lightWaitS,
+// avgSpeedKmh, rushFactor, dominantClass}.
+function aiEstimate(route, fromM = 0) {
+  const remaining = Math.max(0, route.distance - fromM);
+  const osrmSpeed = route.distance / route.duration; // m/s
+  let drivingS;
+  let dominantClass = null;
+
+  if (route.limitIntervals?.length) {
+    // Per-segment integratie obv wegtype-factor + maxspeed
+    let covered = fromM;
+    drivingS = 0;
+    const classDist = {};
+    for (const iv of route.limitIntervals) {
+      if (iv.toM <= covered) continue;
+      const segFrom = Math.max(covered, iv.fromM);
+      const segTo = iv.toM;
+      if (segTo <= segFrom) continue;
+      // Gat ervoor: vul met OSRM-base
+      if (segFrom > covered) {
+        drivingS += (segFrom - covered) / osrmSpeed;
+      }
+      const d = segTo - segFrom;
+      const factor = ROAD_SPEED_FACTORS[iv.roadClass] ?? 0.70;
+      const v = (iv.speed / 3.6) * factor;
+      drivingS += d / Math.max(v, 1);
+      classDist[iv.roadClass] = (classDist[iv.roadClass] || 0) + d;
+      covered = segTo;
+    }
+    if (covered < route.distance) {
+      drivingS += (route.distance - covered) / osrmSpeed;
+    }
+    // Dominante wegtype
+    let max = 0;
+    for (const [k, v] of Object.entries(classDist)) {
+      if (v > max) { max = v; dominantClass = k; }
+    }
+  } else {
+    drivingS = remaining / osrmSpeed;
+  }
+
+  // Spitsuur factor (lager = langer)
+  const rh = rushHourFactor();
+  drivingS = drivingS / rh;
+
+  // Stoplicht-wachttijd
+  const ahead = (route.signals || []).filter(s => s.distM > fromM);
+  let lightWaitS = 0;
+  for (const s of ahead) {
+    lightWaitS += expectedLightWait(s, fromM, osrmSpeed);
+  }
+
+  const durationS = drivingS + lightWaitS;
+  const avgSpeedKmh = remaining > 0 ? (remaining / drivingS) * 3.6 : 0;
+
+  return {
+    durationS, drivingS, lightWaitS,
+    avgSpeedKmh,
+    rushFactor: rh,
+    rushLabel: rushHourLabel(),
+    dominantClass,
+    hasLimits: !!route.limitIntervals?.length,
+  };
 }
 
 // Limiet bij een specifieke positie. Pakt het kortste overlappend
@@ -648,10 +774,9 @@ function setSidebarCompact(compact) {
 function updateCompactSummary() {
   const r = state.routes[state.activeRouteIdx];
   if (!r) return;
-  const speed = avgSpeedMS();
+  const ai = aiEstimate(r, state.drivePos);
   const remain = Math.max(0, r.distance - state.drivePos);
-  const remainS = remain / speed;
-  const cs1 = $("cs-time"); if (cs1) cs1.textContent = fmtClock(new Date(Date.now() + remainS * 1000));
+  const cs1 = $("cs-time"); if (cs1) cs1.textContent = fmtClock(new Date(Date.now() + ai.durationS * 1000));
   const cs2 = $("cs-dist"); if (cs2) cs2.textContent = fmtDistance(remain);
   const cs3 = $("cs-lights"); if (cs3) cs3.textContent = `${r.signals.length} lichten`;
 }
@@ -690,14 +815,26 @@ function avgSpeedMS() {
 function renderEta() {
   const r = state.routes[state.activeRouteIdx];
   if (!r) return;
-  const speed = avgSpeedMS();
   const remain = Math.max(0, r.distance - state.drivePos);
-  const remainS = remain / speed;
+  const ai = aiEstimate(r, state.drivePos);
   $("eta-distance").textContent = fmtDistance(remain);
-  $("eta-duration").textContent = fmtDuration(remainS);
-  $("eta-time").textContent = fmtClock(new Date(Date.now() + remainS * 1000));
+  $("eta-duration").textContent = fmtDuration(ai.durationS);
+  $("eta-time").textContent = fmtClock(new Date(Date.now() + ai.durationS * 1000));
   $("eta-signals").textContent = r.signals.length;
   $("eta-smart").textContent = r.signals.filter(s => s.smart).length;
+  // AI factoren
+  const aiBadge = $("ai-badge");
+  if (aiBadge) aiBadge.classList.toggle("active", ai.hasLimits);
+  const aiRush = $("ai-rush");
+  if (aiRush) aiRush.textContent = `${ai.rushLabel} (${Math.round(ai.rushFactor * 100)}%)`;
+  const aiSpeed = $("ai-speed");
+  if (aiSpeed) aiSpeed.textContent = ai.avgSpeedKmh > 0 ? `${Math.round(ai.avgSpeedKmh)} km/u` : "–";
+  const aiLights = $("ai-lights");
+  if (aiLights) aiLights.textContent = ai.lightWaitS > 0 ? `+${fmtDuration(ai.lightWaitS)}` : "geen";
+  const aiRoad = $("ai-road");
+  if (aiRoad) aiRoad.textContent = ai.dominantClass ? (ROAD_CLASS_LABELS[ai.dominantClass] ?? ai.dominantClass) : "onbekend";
+  const aiSrc = $("ai-source");
+  if (aiSrc) aiSrc.textContent = ai.hasLimits ? "OSM-wegtype + tijd + lichten" : "OSRM-basis + tijd + lichten";
 }
 function renderUpcoming(signals, drivePosM, speed) {
   const list = $("upcoming-list");
