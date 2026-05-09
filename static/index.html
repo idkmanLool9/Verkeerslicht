@@ -213,25 +213,59 @@
         <button id="vehicle-lookup" class="btn btn-primary btn-compact">Zoek</button>
       </div>
       <div id="vehicle-card" class="vehicle-card hidden">
-        <div class="vehicle-photo">
-          <img id="vehicle-photo-img" alt="" />
-          <div class="vehicle-photo-fallback">
-            <svg viewBox="0 0 64 32" width="100%"><path d="M8 24 L12 14 Q14 10 18 10 L46 10 Q50 10 52 14 L56 24 L8 24 Z M14 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0 M42 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0" fill="currentColor"/></svg>
+        <div class="vehicle-hero">
+          <div class="vehicle-photo">
+            <img id="vehicle-photo-img" alt="" />
+            <div class="vehicle-photo-fallback" id="vehicle-photo-fallback">
+              <svg viewBox="0 0 64 32" width="100%"><path d="M8 24 L12 14 Q14 10 18 10 L46 10 Q50 10 52 14 L56 24 L8 24 Z M14 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0 M42 24 a4 4 0 1 0 8 0 a4 4 0 1 0 -8 0" fill="currentColor"/></svg>
+            </div>
+          </div>
+          <div class="vehicle-headline">
+            <div class="vehicle-name"><span id="v-merk">–</span> <span id="v-model">–</span></div>
+            <div class="vehicle-meta"><span id="v-bouwjaar">–</span> · <span id="v-brandstof">–</span> · <span id="v-kleur">–</span></div>
+            <div class="vehicle-headtags">
+              <span id="v-eco" class="hidden"><span class="eco-badge">A</span> eco</span>
+              <span id="v-recalls" class="vtag warn hidden">⚠ <span id="v-recalls-n">0</span> terugroep</span>
+              <span id="v-apk-tag" class="vtag hidden">APK <span id="v-apk-status">–</span></span>
+            </div>
           </div>
         </div>
-        <div class="vehicle-info">
-          <div class="vehicle-name"><span id="v-merk">–</span> <span id="v-model">–</span></div>
-          <div class="vehicle-meta">
-            <span id="v-bouwjaar">–</span> · <span id="v-brandstof">–</span> · <span id="v-kleur">–</span>
+
+        <div class="v-section">
+          <div class="v-section-title">Specs</div>
+          <div class="v-grid">
+            <div><span>Vermogen</span><b><span id="v-vermogen">–</span></b></div>
+            <div><span>Cilinderinhoud</span><b><span id="v-cilinder">–</span></b></div>
+            <div><span>Cilinders</span><b><span id="v-cilinders">–</span></b></div>
+            <div><span>Inrichting</span><b><span id="v-inrichting">–</span></b></div>
+            <div><span>Massa rijklaar</span><b><span id="v-massa">–</span></b></div>
+            <div><span>Top</span><b><span id="v-maxspeed">–</span></b></div>
+            <div><span>Lengte</span><b><span id="v-lengte">–</span></b></div>
+            <div><span>Zitplaatsen</span><b><span id="v-zitplaatsen">–</span></b></div>
           </div>
-          <div class="vehicle-stats">
-            <div><b id="v-co2">–</b><span>g CO₂/km</span></div>
-            <div><b id="v-maxspeed">–</b><span>km/u max</span></div>
-            <div><b id="v-massa">–</b><span>kg</span></div>
+        </div>
+
+        <div class="v-section">
+          <div class="v-section-title">Verbruik &amp; uitstoot</div>
+          <div class="v-grid">
+            <div><span>CO₂</span><b><span id="v-co2">–</span></b></div>
+            <div><span>Verbruik gec.</span><b><span id="v-verb-gec">–</span></b></div>
+            <div><span>Stadsverbruik</span><b><span id="v-verb-stad">–</span></b></div>
+            <div><span>Buitenweg</span><b><span id="v-verb-buiten">–</span></b></div>
+            <div><span>Range (EV)</span><b><span id="v-range">–</span></b></div>
+            <div><span>Emissie</span><b><span id="v-emissie">–</span></b></div>
           </div>
-          <div id="v-eco" class="vehicle-eco hidden">
-            <span class="eco-badge">A</span>
-            <span class="eco-text">Eco-score</span>
+        </div>
+
+        <div class="v-section">
+          <div class="v-section-title">Registratie</div>
+          <div class="v-grid">
+            <div><span>APK geldig tot</span><b><span id="v-apk">–</span></b></div>
+            <div><span>WAM verzekerd</span><b><span id="v-wam">–</span></b></div>
+            <div><span>Eerste toelating</span><b><span id="v-eerste-toel">–</span></b></div>
+            <div><span>NL sinds</span><b><span id="v-nl-sinds">–</span></b></div>
+            <div><span>Catalogusprijs</span><b><span id="v-prijs">–</span></b></div>
+            <div><span>Bruto BPM</span><b><span id="v-bpm">–</span></b></div>
           </div>
         </div>
       </div>

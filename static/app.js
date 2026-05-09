@@ -378,29 +378,77 @@ function saveVehicle(v) {
 }
 function clearVehicle() { localStorage.removeItem("verkeerslicht.vehicle"); }
 
+function rdwDate(s) {
+  if (!s) return null;
+  const str = String(s);
+  if (str.length >= 8) return `${str.substring(6, 8)}-${str.substring(4, 6)}-${str.substring(0, 4)}`;
+  return str;
+}
+function rdwYear(s) {
+  if (!s) return null;
+  const str = String(s);
+  return str.length >= 4 ? str.substring(0, 4) : str;
+}
+
 async function fetchVehicleByKenteken(kenteken) {
   const k = normalizeKenteken(kenteken);
   if (!k) throw new Error("Geen kenteken");
-  const [base, fuel] = await Promise.all([
+  const [base, fuel, recalls] = await Promise.all([
     fetch(`https://opendata.rdw.nl/resource/m9d7-ebf2.json?kenteken=${k}`).then(r => r.json()).catch(() => []),
     fetch(`https://opendata.rdw.nl/resource/8ys7-d773.json?kenteken=${k}`).then(r => r.json()).catch(() => []),
+    fetch(`https://opendata.rdw.nl/resource/j9yg-7rg9.json?kenteken=${k}&$limit=20`).then(r => r.json()).catch(() => []),
   ]);
   if (!base.length) throw new Error("Kenteken niet gevonden");
   const v = base[0];
   const f = fuel[0] || {};
   const num = (x) => (x == null || x === "") ? null : parseFloat(x);
+  const kw = num(f.nettomaximumvermogen) ?? num(f.nominaal_continu_maximumvermogen);
   return {
     kenteken: k,
     merk: (v.merk || "").trim(),
     model: (v.handelsbenaming || "").trim(),
+    voertuigsoort: (v.voertuigsoort || "").trim(),
+    inrichting: (v.inrichting || "").trim(),
     kleur: (v.eerste_kleur || "").trim(),
-    bouwjaar: v.datum_eerste_toelating ? String(v.datum_eerste_toelating).substring(0, 4) : null,
+    tweedeKleur: (v.tweede_kleur || "").trim(),
+    bouwjaar: rdwYear(v.datum_eerste_toelating),
+    eersteToelating: rdwDate(v.datum_eerste_toelating),
+    eersteTenaamstellingNL: rdwDate(v.datum_eerste_tenaamstelling_in_nederland),
+    apkVervaldatum: rdwDate(v.vervaldatum_apk),
+    wamVerzekerd: (v.wam_verzekerd || "").toLowerCase() === "ja",
+    aantalZitplaatsen: num(v.aantal_zitplaatsen),
+    aantalDeuren: num(v.aantal_deuren),
+    aantalCilinders: num(v.aantal_cilinders),
+    cilinderinhoud: num(v.cilinderinhoud),
+    massaLedig: num(v.massa_ledig_voertuig),
+    massa: num(v.massa_rijklaar),
+    maxTrekkenGeremd: num(v.maximum_trekken_massa_geremd),
+    maxTrekkenOngeremd: num(v.maximum_massa_trekken_ongeremd),
+    lengte: num(v.lengte),
+    breedte: num(v.breedte),
+    hoogte: num(v.hoogte_voertuig),
+    aantalWielen: num(v.aantal_wielen),
+    aantalAssen: num(v.aantal_assen),
+    maxSpeedKmh: num(v.maximum_constructie_snelheid) ?? num(v.maximum_constructie_snelheid_brom),
+    catalogusprijs: num(v.catalogusprijs),
+    brutoBpm: num(v.bruto_bpm),
+    co2: num(v.co2_uitstoot_gecombineerd) ?? num(f.uitstoot_co2_gecombineerd_wltp) ?? num(f.uitstoot_co2_gecombineerd) ?? null,
+    co2Gewogen: num(v.co2_uitstoot_gewogen),
+    // Brandstof
     brandstof: (f.brandstof_omschrijving || "").toLowerCase().trim(),
-    co2: num(v.co2_uitstoot_gecombineerd) ?? num(f.uitstoot_co2_gecombineerd) ?? null,
-    massa: num(v.massa_rijklaar) ?? num(v.massa_ledig_voertuig) ?? null,
-    maxSpeedKmh: num(v.maximum_constructie_snelheid) ?? null,
-    elektrischKwhPer100km: num(f.elektrisch_verbruik_extern_opladen_wltp) ?? null,
-    catalogusprijs: num(v.catalogusprijs) ?? null,
+    emissieKlasse: (f.emissiecode_omschrijving || "").trim(),
+    verbruikStad: num(f.brandstof_verbruik_stad),
+    verbruikBuiten: num(f.brandstof_verbruik_buiten),
+    verbruikGecombineerd: num(f.brandstof_verbruik_gecombineerd),
+    geluidStationair: num(f.geluidsniveau_stationair),
+    geluidRijdend: num(f.geluidsniveau_rijdend),
+    vermogenKw: kw,
+    vermogenPk: kw ? Math.round(kw * 1.35962) : null,
+    elektrischKwhPer100km: num(f.elektrisch_verbruik_extern_opladen_wltp) ?? num(f.elektrisch_verbruik_combined_wltp),
+    actieradiusKm: num(f.actie_radius_extern_opladen_wltp) ?? num(f.actie_radius_extern_opladen_stad_wltp),
+    klasseHybride: (f.klasse_hybride_elektrisch_voertuig || "").trim(),
+    // Terugroepacties
+    terugroepacties: Array.isArray(recalls) ? recalls.length : 0,
   };
 }
 
@@ -1955,18 +2003,64 @@ function closeVehicleModal() {
 }
 let pendingVehicle = null;
 
+const COLOR_MAP = {
+  rood: "#c0392b", blauw: "#2980b9", zwart: "#1a1a1a", wit: "#ecf0f1",
+  grijs: "#7f8c8d", groen: "#27ae60", geel: "#f1c40f", bruin: "#795548",
+  beige: "#d4b896", zilvergrijs: "#bdc3c7", zilver: "#bdc3c7",
+  oranje: "#e67e22", paars: "#8e44ad", goud: "#daa520", roze: "#e91e63",
+  donkerblauw: "#1a4480", lichtblauw: "#5dade2",
+  donkergrijs: "#444", lichtgrijs: "#bbb",
+  donkergroen: "#155724",
+};
+function colorForKleur(kleur) {
+  if (!kleur) return null;
+  const k = kleur.toLowerCase().replace(/\s+/g, "");
+  return COLOR_MAP[k] || null;
+}
+function fmtPrice(eur) {
+  if (eur == null) return "–";
+  return `€ ${eur.toLocaleString("nl-NL", { maximumFractionDigits: 0 })}`;
+}
+
 function showVehicleCard(v) {
   const card = $("vehicle-card");
   card.classList.remove("hidden");
-  $("v-merk").textContent = v.merk || "–";
-  $("v-model").textContent = v.model || "";
-  $("v-bouwjaar").textContent = v.bouwjaar || "–";
-  $("v-brandstof").textContent = v.brandstof || "–";
-  $("v-kleur").textContent = (v.kleur || "–").toLowerCase();
+  const set = (id, val) => { const el = $(id); if (el) el.textContent = val == null || val === "" ? "–" : val; };
+
+  set("v-merk", v.merk || "–");
+  set("v-model", v.model || "");
+  set("v-bouwjaar", v.bouwjaar);
+  set("v-brandstof", v.brandstof);
+  set("v-kleur", (v.kleur || "").toLowerCase());
+
+  // Specs
+  set("v-vermogen", v.vermogenKw ? `${Math.round(v.vermogenKw)} kW (${v.vermogenPk} pk)` : null);
+  set("v-cilinder", v.cilinderinhoud ? `${Math.round(v.cilinderinhoud)} cm³` : null);
+  set("v-cilinders", v.aantalCilinders);
+  set("v-inrichting", (v.inrichting || "").toLowerCase());
+  set("v-massa", v.massa ? `${Math.round(v.massa)} kg` : null);
+  set("v-maxspeed", v.maxSpeedKmh ? `${Math.round(v.maxSpeedKmh)} km/u` : null);
+  set("v-lengte", v.lengte ? `${(v.lengte / 100).toFixed(2)} m` : null);
+  set("v-zitplaatsen", v.aantalZitplaatsen);
+
+  // Verbruik
   const co2 = vehicleCo2PerKm(v);
-  $("v-co2").textContent = co2 != null ? Math.round(co2) : "–";
-  $("v-maxspeed").textContent = v.maxSpeedKmh ? Math.round(v.maxSpeedKmh) : "–";
-  $("v-massa").textContent = v.massa ? Math.round(v.massa) : "–";
+  set("v-co2", co2 != null ? `${Math.round(co2)} g/km` : null);
+  set("v-verb-gec", v.verbruikGecombineerd ? `${v.verbruikGecombineerd.toFixed(1)} l/100km` :
+                    v.elektrischKwhPer100km ? `${v.elektrischKwhPer100km.toFixed(1)} kWh/100km` : null);
+  set("v-verb-stad", v.verbruikStad ? `${v.verbruikStad.toFixed(1)} l/100km` : null);
+  set("v-verb-buiten", v.verbruikBuiten ? `${v.verbruikBuiten.toFixed(1)} l/100km` : null);
+  set("v-range", v.actieradiusKm ? `${Math.round(v.actieradiusKm)} km` : null);
+  set("v-emissie", v.emissieKlasse || null);
+
+  // Registratie
+  set("v-apk", v.apkVervaldatum);
+  set("v-wam", v.wamVerzekerd ? "Ja" : "Nee");
+  set("v-eerste-toel", v.eersteToelating);
+  set("v-nl-sinds", v.eersteTenaamstellingNL);
+  set("v-prijs", fmtPrice(v.catalogusprijs));
+  set("v-bpm", fmtPrice(v.brutoBpm));
+
   // Eco-band
   const band = ecoBand(co2);
   const eco = $("v-eco");
@@ -1978,19 +2072,52 @@ function showVehicleCard(v) {
   } else {
     eco.classList.add("hidden");
   }
-  // Foto
+
+  // APK-tag
+  const apkTag = $("v-apk-tag");
+  const apkStatus = $("v-apk-status");
+  if (v.apkVervaldatum) {
+    apkTag.classList.remove("hidden", "warn", "ok");
+    // parseer vervaldatum
+    const [d, m, y] = v.apkVervaldatum.split("-");
+    const dt = new Date(`${y}-${m}-${d}`);
+    const now = new Date();
+    if (dt < now) {
+      apkTag.classList.add("warn");
+      apkStatus.textContent = "VERLOPEN";
+    } else {
+      apkTag.classList.add("ok");
+      apkStatus.textContent = `tot ${v.apkVervaldatum}`;
+    }
+  } else {
+    apkTag.classList.add("hidden");
+  }
+
+  // Recalls
+  const rec = $("v-recalls");
+  if (v.terugroepacties > 0) {
+    rec.classList.remove("hidden");
+    $("v-recalls-n").textContent = String(v.terugroepacties);
+  } else {
+    rec.classList.add("hidden");
+  }
+
+  // Foto-fallback achtergrondkleur op basis van eerste_kleur
+  const photoWrap = $("vehicle-photo-img").parentElement;
+  const tint = colorForKleur(v.kleur);
+  photoWrap.style.setProperty("--vehicle-color", tint || "");
+  // Foto laden
   const photo = $("vehicle-photo-img");
-  const wrap = photo.parentElement;
-  wrap.classList.remove("has-img");
+  photoWrap.classList.remove("has-img");
   photo.src = "";
   if (v.photoUrl) {
     photo.src = v.photoUrl;
-    wrap.classList.add("has-img");
+    photoWrap.classList.add("has-img");
   } else if (v.merk) {
     fetchVehiclePhoto(v.merk, v.model).then(url => {
       if (url) {
         photo.src = url;
-        wrap.classList.add("has-img");
+        photoWrap.classList.add("has-img");
         if (pendingVehicle) pendingVehicle.photoUrl = url;
       }
     });
