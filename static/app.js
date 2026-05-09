@@ -1,16 +1,15 @@
-// Verkeerslicht — kaart, route, lichten en rit-simulatie.
+// Verkeerslicht — kaart, routes, lichten en rit-simulatie.
 //
 // Volledig static (geen backend nodig). Gebruikt:
-//  - Leaflet + OpenStreetMap tiles voor de kaart
+//  - Leaflet + OpenStreetMap tiles
 //  - Nominatim (OSM) voor adres -> coördinaten
-//  - OSRM demo-server voor routing
+//  - OSRM demo voor routing met alternatieven
 //  - Overpass API voor verkeerslicht-locaties (highway=traffic_signals)
 //
-// SPaT-fasen worden lokaal gesimuleerd met een 40s-cyclus per kruising
-// (groen 15s / geel 3s / rood 22s, met willekeurige offset per licht).
-// Voor echte UDAP-data: stel een API-URL in via localStorage-key
-// "verkeerslicht.apiBase" — dan wordt /api/signals/{lat}/{lon} gebruikt
-// (nog niet geïmplementeerd in de backend; eerst koppelen aan iVRI ID).
+// Onderscheid slim/klassiek: zonder UDAP-creds weten we het niet zeker.
+// We classificeren ~30% van de lichten als "slim" via een stabiele hash
+// van de OSM node-id. Slimme lichten krijgen een gesimuleerde 40s-cyclus
+// en aftelling; klassieke lichten worden alleen als locatie getoond.
 
 const $ = (id) => document.getElementById(id);
 const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -19,13 +18,15 @@ const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const OSRM = "https://router.project-osrm.org/route/v1/driving";
 const OVERPASS = "https://overpass-api.de/api/interpreter";
 
-// Demo-cycle, gedeeld door alle gesimuleerde lichten
 const CYCLE = [
   { phase: "groen", color: "green", duration: 15 },
   { phase: "geel",  color: "amber", duration: 3  },
   { phase: "rood",  color: "red",   duration: 22 },
 ];
 const CYCLE_TOTAL = CYCLE.reduce((a, c) => a + c.duration, 0);
+
+const SMART_RATIO = 30; // % van de lichten gemarkeerd als "slim" in demo
+const MAX_DIST_TO_ROUTE_M = 30;
 
 // ============ Map ============
 const map = L.map("map", {
@@ -40,19 +41,14 @@ L.tileLayer(TILE_URL, {
 
 // ============ State ============
 const state = {
-  routeLine: null,
-  routeCoords: [], // [[lat, lon], ...]
-  routeCumDist: [], // cumulative distance in meters at each routeCoord
-  totalDistanceM: 0,
-  totalDurationS: 0,
-  signals: [], // { lat, lon, marker, distM, offsetS }
+  routes: [],          // [{ coords, cumDist, distance, duration, polyline, glow, signals, signalsLayer }]
+  activeRouteIdx: -1,
   startMarker: null,
   endMarker: null,
-  driver: null, // marker
+  driver: null,
   driving: false,
-  driveStart: 0, // performance.now()
-  driveSpeedMS: 50 / 3.6, // 50 km/u default
-  drivePos: 0, // meters along route
+  driveStart: 0,
+  drivePos: 0,
   rafId: null,
 };
 
@@ -64,16 +60,11 @@ function showToast(msg, ms = 3500) {
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => t.classList.add("hidden"), ms);
 }
-
 function setLoading(text) {
-  if (!text) {
-    $("loading").classList.add("hidden");
-    return;
-  }
+  if (!text) { $("loading").classList.add("hidden"); return; }
   $("loading-text").textContent = text;
   $("loading").classList.remove("hidden");
 }
-
 function fmtDuration(s) {
   if (!isFinite(s) || s < 0) return "–";
   const m = Math.round(s / 60);
@@ -104,15 +95,12 @@ function haversine(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-// Project a point onto a polyline. Returns { distAlong: meters along route,
-// minD: distance from line, idx: segment index, t: param along segment }
 function projectOnPolyline(point, coords, cumDist) {
-  let best = { minD: Infinity, distAlong: 0, idx: 0, t: 0 };
+  let best = { minD: Infinity, distAlong: 0 };
   for (let i = 0; i < coords.length - 1; i++) {
     const a = coords[i], b = coords[i + 1];
     const segLen = cumDist[i + 1] - cumDist[i];
     if (segLen <= 0) continue;
-    // Equirectangular projection for short distances
     const lat0 = ((a[0] + b[0]) / 2) * Math.PI / 180;
     const ax = a[1], ay = a[0];
     const bx = b[1], by = b[0];
@@ -127,9 +115,7 @@ function projectOnPolyline(point, coords, cumDist) {
     const projLat = a[0] + t * (b[0] - a[0]);
     const projLon = a[1] + t * (b[1] - a[1]);
     const d = haversine(point, [projLat, projLon]);
-    if (d < best.minD) {
-      best = { minD: d, distAlong: cumDist[i] + t * segLen, idx: i, t };
-    }
+    if (d < best.minD) best = { minD: d, distAlong: cumDist[i] + t * segLen };
   }
   return best;
 }
@@ -137,7 +123,6 @@ function projectOnPolyline(point, coords, cumDist) {
 function pointAtDistance(coords, cumDist, distM) {
   if (distM <= 0) return coords[0];
   if (distM >= cumDist[cumDist.length - 1]) return coords[coords.length - 1];
-  // Binary search
   let lo = 0, hi = cumDist.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
@@ -152,61 +137,68 @@ function pointAtDistance(coords, cumDist, distM) {
   ];
 }
 
+// ============ Smart classifier ============
+function hash32(n) {
+  // xorshift-ish stable hash → 0..99
+  let x = (n | 0) ^ 0x9e3779b1;
+  x = (x ^ (x << 13)) | 0;
+  x = (x ^ (x >>> 17)) | 0;
+  x = (x ^ (x << 5)) | 0;
+  return Math.abs(x) % 100;
+}
+function isSmart(nodeId) {
+  return hash32(Number(nodeId)) < SMART_RATIO;
+}
+
 // ============ Phase simulation ============
 function phaseAt(offsetS, atEpochS = Date.now() / 1000) {
   let elapsed = ((atEpochS + offsetS) % CYCLE_TOTAL + CYCLE_TOTAL) % CYCLE_TOTAL;
   let t = 0;
   for (const step of CYCLE) {
     if (elapsed < t + step.duration) {
-      return {
-        phase: step.phase,
-        color: step.color,
-        secondsLeft: (t + step.duration) - elapsed,
-      };
+      return { phase: step.phase, color: step.color, secondsLeft: (t + step.duration) - elapsed };
     }
     t += step.duration;
   }
   return null;
 }
-
-// Predict the phase a given signal will be in when the driver arrives.
 function predictAtArrival(offsetS, etaSeconds) {
   return phaseAt(offsetS, Date.now() / 1000 + etaSeconds);
 }
 
-// ============ Geocoding ============
+// ============ External APIs ============
 async function geocode(query) {
   const url = `${NOMINATIM}?format=json&limit=1&countrycodes=nl&q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`geocoding mislukt (${res.status})`);
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`Geocoding mislukt (${res.status})`);
   const json = await res.json();
-  if (!json.length) throw new Error(`niet gevonden: ${query}`);
+  if (!json.length) throw new Error(`Niet gevonden: ${query}`);
   return { lat: parseFloat(json[0].lat), lon: parseFloat(json[0].lon), display: json[0].display_name };
 }
 
-// ============ Routing ============
-async function fetchRoute(from, to) {
-  const url = `${OSRM}/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&steps=false`;
+async function fetchRoutes(from, to) {
+  const url = `${OSRM}/${from.lon},${from.lat};${to.lon},${to.lat}?alternatives=3&overview=full&geometries=geojson&steps=false`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`routing mislukt (${res.status})`);
+  if (!res.ok) throw new Error(`Routing mislukt (${res.status})`);
   const json = await res.json();
-  if (!json.routes?.length) throw new Error("geen route gevonden");
-  const r = json.routes[0];
-  // GeoJSON coords are [lon, lat]; convert to [lat, lon]
-  const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-  // Cumulative distances
-  const cum = [0];
-  for (let i = 1; i < coords.length; i++) {
-    cum.push(cum[i - 1] + haversine(coords[i - 1], coords[i]));
-  }
-  return { coords, cumDist: cum, distance: r.distance, duration: r.duration };
+  if (!json.routes?.length) throw new Error("Geen route gevonden");
+  return json.routes.map((r) => {
+    const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+    const cum = [0];
+    for (let i = 1; i < coords.length; i++) {
+      cum.push(cum[i - 1] + haversine(coords[i - 1], coords[i]));
+    }
+    return {
+      coords,
+      cumDist: cum,
+      distance: r.distance,
+      duration: r.duration,
+      legSummary: r.legs?.[0]?.summary || "",
+    };
+  });
 }
 
-// ============ Traffic signals ============
-async function fetchSignals(coords) {
-  // Bounding box of route, padded a bit
+async function fetchSignalsBbox(coords) {
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
   for (const [lat, lon] of coords) {
     if (lat < minLat) minLat = lat;
@@ -222,82 +214,51 @@ async function fetchSignals(coords) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: "data=" + encodeURIComponent(query),
   });
-  if (!res.ok) throw new Error(`stoplichten ophalen mislukt (${res.status})`);
+  if (!res.ok) throw new Error(`Stoplichten ophalen mislukt (${res.status})`);
   const json = await res.json();
   return json.elements ?? [];
 }
 
-function filterSignalsToRoute(signals, coords, cumDist, maxDistFromRouteM = 25) {
+function filterSignalsToRoute(signals, coords, cumDist) {
   const out = [];
   const seen = new Set();
   for (const s of signals) {
     const proj = projectOnPolyline([s.lat, s.lon], coords, cumDist);
-    if (proj.minD > maxDistFromRouteM) continue;
-    // Deduplicate signals that project to ~same spot (cluster of pole nodes)
+    if (proj.minD > MAX_DIST_TO_ROUTE_M) continue;
     const key = Math.round(proj.distAlong / 30);
     if (seen.has(key)) continue;
     seen.add(key);
+    const smart = isSmart(s.id);
     out.push({
       id: s.id,
       lat: s.lat,
       lon: s.lon,
       distM: proj.distAlong,
-      // Pseudo-random but stable phase offset per node id
-      offsetS: Math.abs((s.id * 31) % CYCLE_TOTAL) - CYCLE_TOTAL / 2,
+      smart,
+      offsetS: smart ? Math.abs((s.id * 31) % CYCLE_TOTAL) - CYCLE_TOTAL / 2 : 0,
     });
   }
   out.sort((a, b) => a.distM - b.distM);
   return out;
 }
 
-// ============ Markers & route drawing ============
-function clearRoute() {
-  if (state.routeLine) { map.removeLayer(state.routeLine); state.routeLine = null; }
-  for (const s of state.signals) {
-    if (s.marker) map.removeLayer(s.marker);
-  }
-  state.signals = [];
-  if (state.startMarker) { map.removeLayer(state.startMarker); state.startMarker = null; }
-  if (state.endMarker) { map.removeLayer(state.endMarker); state.endMarker = null; }
-  if (state.driver) { map.removeLayer(state.driver); state.driver = null; }
-}
-
-function drawRoute(coords) {
-  state.routeLine = L.polyline(coords, {
-    color: "#ffcc00",
-    weight: 6,
-    opacity: 0.95,
-    lineCap: "round",
-    lineJoin: "round",
-  }).addTo(map);
-  // Outer glow line
-  L.polyline(coords, {
-    color: "#ffcc00",
-    weight: 14,
-    opacity: 0.15,
-    lineCap: "round",
-    lineJoin: "round",
-  }).addTo(map);
-  map.fitBounds(state.routeLine.getBounds(), { padding: [40, 40] });
-}
-
-function makeSignalMarker(lat, lon) {
+// ============ Markers ============
+function makeSignalMarker(s) {
+  const className = s.smart ? "signal-marker smart" : "signal-marker classic";
   const icon = L.divIcon({
     className: "",
-    html: '<div class="signal-marker"></div>',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
+    html: `<div class="${className}"></div>`,
+    iconSize: s.smart ? [14, 14] : [10, 10],
+    iconAnchor: s.smart ? [7, 7] : [5, 5],
   });
-  return L.marker([lat, lon], { icon, interactive: false }).addTo(map);
+  return L.marker([s.lat, s.lon], { icon, interactive: false }).addTo(map);
 }
-
-function setSignalMarkerColor(marker, color) {
-  const el = marker.getElement()?.querySelector(".signal-marker");
+function setSmartMarkerColor(marker, color) {
+  const el = marker.getElement()?.querySelector(".signal-marker.smart");
   if (!el) return;
   el.classList.remove("red", "amber", "green");
   if (color) el.classList.add(color);
 }
-
 function makeEndpointMarker(lat, lon, end = false) {
   const icon = L.divIcon({
     className: "",
@@ -307,7 +268,6 @@ function makeEndpointMarker(lat, lon, end = false) {
   });
   return L.marker([lat, lon], { icon }).addTo(map);
 }
-
 function makeDriverMarker(lat, lon) {
   const icon = L.divIcon({
     className: "",
@@ -318,42 +278,134 @@ function makeDriverMarker(lat, lon) {
   return L.marker([lat, lon], { icon }).addTo(map);
 }
 
-// ============ UI updates ============
+// ============ Route rendering ============
+function clearAll() {
+  for (const r of state.routes) {
+    if (r.polyline) map.removeLayer(r.polyline);
+    if (r.glow) map.removeLayer(r.glow);
+    if (r.signalsLayer) map.removeLayer(r.signalsLayer);
+  }
+  state.routes = [];
+  state.activeRouteIdx = -1;
+  if (state.startMarker) { map.removeLayer(state.startMarker); state.startMarker = null; }
+  if (state.endMarker) { map.removeLayer(state.endMarker); state.endMarker = null; }
+  if (state.driver) { map.removeLayer(state.driver); state.driver = null; }
+  state.drivePos = 0;
+  state.driving = false;
+}
+
+function drawRoute(r, isActive) {
+  if (r.polyline) map.removeLayer(r.polyline);
+  if (r.glow) map.removeLayer(r.glow);
+  const colour = isActive ? "#ffcc00" : "#6c7785";
+  const weight = isActive ? 6 : 4;
+  const opacity = isActive ? 0.95 : 0.55;
+  if (isActive) {
+    r.glow = L.polyline(r.coords, { color: "#ffcc00", weight: 14, opacity: 0.15, lineCap: "round", lineJoin: "round" });
+    r.glow.addTo(map);
+  }
+  r.polyline = L.polyline(r.coords, { color: colour, weight, opacity, lineCap: "round", lineJoin: "round" });
+  r.polyline.addTo(map);
+  if (!isActive) {
+    r.polyline.on("click", () => selectRoute(state.routes.indexOf(r)));
+  }
+}
+
+function setActiveRoute(idx) {
+  state.activeRouteIdx = idx;
+  for (let i = 0; i < state.routes.length; i++) {
+    drawRoute(state.routes[i], i === idx);
+    // signals only visible for active route
+    if (state.routes[i].signalsLayer) {
+      if (i === idx) state.routes[i].signalsLayer.addTo(map);
+      else map.removeLayer(state.routes[i].signalsLayer);
+    }
+  }
+  // Bring active polyline to top
+  if (state.routes[idx]?.polyline) state.routes[idx].polyline.bringToFront();
+  if (state.driver) state.driver.bringToFront();
+}
+
+function selectRoute(idx) {
+  if (idx < 0 || idx >= state.routes.length || idx === state.activeRouteIdx) return;
+  setActiveRoute(idx);
+  state.drivePos = 0;
+  if (state.driver) {
+    state.driver.setLatLng(state.routes[idx].coords[0]);
+  }
+  state.driving = false;
+  $("drive-toggle").textContent = "Start rit";
+  renderRouteList();
+  renderEta();
+  // Pan/zoom to new route
+  map.fitBounds(state.routes[idx].polyline.getBounds(), { padding: [60, 60] });
+}
+
+// ============ UI rendering ============
 function setMode(label, kind) {
   const el = $("mode");
   el.textContent = label;
   el.className = "mode" + (kind ? " " + kind : "");
 }
 
+function renderRouteList() {
+  const list = $("routes-list");
+  if (!state.routes.length) {
+    list.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  list.classList.remove("hidden");
+  list.innerHTML = '<div class="routes-title">routes</div>';
+  state.routes.forEach((r, i) => {
+    const card = document.createElement("button");
+    card.className = "route-card" + (i === state.activeRouteIdx ? " selected" : "");
+    const smartCount = (r.signals ?? []).filter(s => s.smart).length;
+    const totalCount = (r.signals ?? []).length;
+    const via = r.legSummary ? `via ${r.legSummary}` : "";
+    card.innerHTML = `
+      <div class="route-time">${fmtDuration(r.duration)}</div>
+      <div class="route-meta">${fmtDistance(r.distance)} · ${totalCount} lichten · ${smartCount} slim</div>
+      ${via ? `<div class="route-via">${via}</div>` : ""}
+    `;
+    card.addEventListener("click", () => selectRoute(i));
+    list.appendChild(card);
+  });
+}
+
 function showSheet() {
-  $("search").classList.add("hidden");
   $("sheet").classList.remove("hidden");
   $("sheet").setAttribute("aria-hidden", "false");
   setTimeout(() => map.invalidateSize(), 50);
 }
-function showSearch() {
+function hideSheet() {
   $("sheet").classList.add("hidden");
   $("sheet").setAttribute("aria-hidden", "true");
-  $("search").classList.remove("hidden");
-  setTimeout(() => map.invalidateSize(), 50);
 }
 
 function setNextLightUI(data) {
   const card = $("next-light");
-  card.classList.remove("is-red", "is-amber", "is-green");
+  card.classList.remove("is-red", "is-amber", "is-green", "classic");
   $("mini-red").classList.remove("on");
   $("mini-amber").classList.remove("on");
   $("mini-green").classList.remove("on");
+
   if (!data) {
     $("next-distance").textContent = "–";
-    $("next-phase").textContent = "geen lichten";
+    $("next-phase").textContent = "geen lichten meer";
     $("next-countdown").textContent = "--";
+    return;
+  }
+  $("next-distance").textContent = fmtDistance(data.remainingM);
+  if (!data.smart) {
+    card.classList.add("classic");
+    $("next-phase").textContent = "klassiek licht — geen live data";
+    $("next-countdown").textContent = "klassiek";
     return;
   }
   if (data.color === "red")   { $("mini-red").classList.add("on");   card.classList.add("is-red"); }
   if (data.color === "amber") { $("mini-amber").classList.add("on"); card.classList.add("is-amber"); }
   if (data.color === "green") { $("mini-green").classList.add("on"); card.classList.add("is-green"); }
-  $("next-distance").textContent = fmtDistance(data.remainingM);
   $("next-phase").textContent = `nu ${data.phase} · bij aankomst ${data.arrival}`;
   $("next-countdown").textContent = data.secondsLeft.toFixed(0);
 }
@@ -365,61 +417,91 @@ function renderUpcoming(signals, drivePosM, etaToFunc) {
   for (const s of upcoming) {
     const li = document.createElement("li");
     const remain = s.distM - drivePosM;
-    const eta = etaToFunc(remain);
-    const arrival = predictAtArrival(s.offsetS, eta);
-    li.innerHTML = `
-      <span class="dot ${arrival.color}"></span>
-      <span>${fmtDistance(remain)}</span>
-      <span class="meta">${arrival.phase} · ${Math.round(arrival.secondsLeft)}s</span>
-    `;
+    if (s.smart) {
+      const eta = etaToFunc(remain);
+      const arr = predictAtArrival(s.offsetS, eta);
+      li.innerHTML = `
+        <span class="dot ${arr.color}"></span>
+        <span>${fmtDistance(remain)}</span>
+        <span class="meta">${arr.phase} · ${Math.round(arr.secondsLeft)}s</span>
+      `;
+    } else {
+      li.classList.add("classic");
+      li.innerHTML = `
+        <span class="dot classic"></span>
+        <span>${fmtDistance(remain)}</span>
+        <span class="meta">klassiek</span>
+      `;
+    }
     list.appendChild(li);
   }
+}
+
+function avgSpeedMS() {
+  const r = state.routes[state.activeRouteIdx];
+  if (r && r.duration > 0 && r.distance > 0) return r.distance / r.duration;
+  return 50 / 3.6;
+}
+
+function renderEta() {
+  const r = state.routes[state.activeRouteIdx];
+  if (!r) return;
+  const speed = avgSpeedMS();
+  const remain = Math.max(0, r.distance - state.drivePos);
+  const remainS = remain / speed;
+  $("eta-distance").textContent = fmtDistance(remain);
+  $("eta-duration").textContent = fmtDuration(remainS);
+  $("eta-time").textContent = fmtClock(new Date(Date.now() + remainS * 1000));
+  $("eta-signals").textContent = r.signals.length;
+  $("eta-smart").textContent = r.signals.filter(s => s.smart).length;
 }
 
 // ============ Main flow ============
 async function planRoute() {
   const fromQ = $("from").value.trim();
   const toQ = $("to").value.trim();
-  if (!fromQ || !toQ) {
-    showToast("Vul vertrekpunt en bestemming in.");
-    return;
-  }
+  if (!fromQ || !toQ) { showToast("Vul vertrekpunt en bestemming in."); return; }
+
   setLoading("Adressen opzoeken…");
   try {
     const [from, to] = await Promise.all([geocode(fromQ), geocode(toQ)]);
-    setLoading("Route plannen…");
-    const route = await fetchRoute(from, to);
+
+    setLoading("Routes plannen…");
+    const routes = await fetchRoutes(from, to);
+
     setLoading("Stoplichten ophalen…");
-    const rawSignals = await fetchSignals(route.coords);
-    const signals = filterSignalsToRoute(rawSignals, route.coords, route.cumDist);
+    // Eén bbox-query voor de unie van alle alternatieven
+    const allCoords = routes.flatMap(r => r.coords);
+    const rawSignals = await fetchSignalsBbox(allCoords);
 
-    // Reset map
-    clearRoute();
-    state.routeCoords = route.coords;
-    state.routeCumDist = route.cumDist;
-    state.totalDistanceM = route.distance;
-    state.totalDurationS = route.duration;
+    // Filter per route afzonderlijk
+    for (const r of routes) {
+      r.signals = filterSignalsToRoute(rawSignals, r.coords, r.cumDist);
+    }
 
-    drawRoute(route.coords);
+    clearAll();
+    state.routes = routes;
     state.startMarker = makeEndpointMarker(from.lat, from.lon, false);
     state.endMarker = makeEndpointMarker(to.lat, to.lon, true);
 
-    state.signals = signals.map(s => ({
-      ...s,
-      marker: makeSignalMarker(s.lat, s.lon),
-    }));
+    // Build per-route signal layers (only active is shown on map)
+    for (const r of routes) {
+      const layer = L.layerGroup();
+      r.signalsLayer = layer;
+      r._signalMarkers = r.signals.map(s => {
+        const m = makeSignalMarker(s);
+        layer.addLayer(m);
+        // We added directly to map in makeSignalMarker; remove and re-add via layer
+        map.removeLayer(m);
+        return m;
+      });
+    }
 
-    state.drivePos = 0;
-    state.driving = false;
-    $("drive-toggle").textContent = "Start rit";
-    state.driver = makeDriverMarker(route.coords[0][0], route.coords[0][1]);
-
-    // ETA labels
-    $("eta-distance").textContent = fmtDistance(route.distance);
-    $("eta-duration").textContent = fmtDuration(route.duration);
-    $("eta-time").textContent = fmtClock(new Date(Date.now() + route.duration * 1000));
-    $("eta-signals").textContent = signals.length;
-
+    state.driver = makeDriverMarker(routes[0].coords[0][0], routes[0].coords[0][1]);
+    setActiveRoute(0);
+    map.fitBounds(routes[0].polyline.getBounds(), { padding: [60, 60] });
+    renderRouteList();
+    renderEta();
     showSheet();
     setLoading(null);
   } catch (e) {
@@ -429,70 +511,61 @@ async function planRoute() {
   }
 }
 
-function avgSpeedMS() {
-  if (state.totalDurationS > 0 && state.totalDistanceM > 0) {
-    return state.totalDistanceM / state.totalDurationS;
-  }
-  return state.driveSpeedMS;
-}
-
-function etaFromHere(remainingM) {
-  return remainingM / avgSpeedMS();
-}
-
 function tick() {
-  if (!state.routeCoords.length) return;
+  const r = state.routes[state.activeRouteIdx];
+  if (!r) return;
   const speed = avgSpeedMS();
 
   if (state.driving) {
     const now = performance.now();
     const dt = (now - state.driveStart) / 1000;
-    state.drivePos = Math.min(state.totalDistanceM, dt * speed);
-    if (state.drivePos >= state.totalDistanceM) {
+    state.drivePos = Math.min(r.distance, dt * speed);
+    if (state.drivePos >= r.distance) {
       state.driving = false;
       $("drive-toggle").textContent = "Start rit";
     }
-    const p = pointAtDistance(state.routeCoords, state.routeCumDist, state.drivePos);
+    const p = pointAtDistance(r.coords, r.cumDist, state.drivePos);
     state.driver.setLatLng(p);
     if (state.driving) map.panTo(p, { animate: false });
   }
 
-  // Update marker colors based on current phase (live, ongeacht of we rijden)
-  for (const s of state.signals) {
+  // Update slimme markers
+  for (let i = 0; i < r.signals.length; i++) {
+    const s = r.signals[i];
+    if (!s.smart) continue;
     const ph = phaseAt(s.offsetS);
-    setSignalMarkerColor(s.marker, ph.color);
+    setSmartMarkerColor(r._signalMarkers[i], ph.color);
   }
 
-  // Next light
-  const next = state.signals.find(s => s.distM > state.drivePos + 1);
+  // Volgend stoplicht
+  const next = r.signals.find(s => s.distM > state.drivePos + 1);
   if (next) {
     const remainingM = next.distM - state.drivePos;
     const eta = remainingM / speed;
-    const nowPh = phaseAt(next.offsetS);
-    const arrPh = predictAtArrival(next.offsetS, eta);
-    setNextLightUI({
-      color: nowPh.color,
-      phase: nowPh.phase,
-      secondsLeft: nowPh.secondsLeft,
-      remainingM,
-      arrival: `${arrPh.phase}`,
-    });
+    if (next.smart) {
+      const nowPh = phaseAt(next.offsetS);
+      const arrPh = predictAtArrival(next.offsetS, eta);
+      setNextLightUI({
+        smart: true,
+        color: nowPh.color,
+        phase: nowPh.phase,
+        secondsLeft: nowPh.secondsLeft,
+        remainingM,
+        arrival: arrPh.phase,
+      });
+    } else {
+      setNextLightUI({ smart: false, remainingM });
+    }
   } else {
     setNextLightUI(null);
   }
 
-  // Upcoming list (re-render only ~every 500ms to save CPU)
+  // Lijst en ETA elke 500ms
   const t = Math.floor(performance.now() / 500);
   if (t !== tick._lastT) {
     tick._lastT = t;
-    renderUpcoming(state.signals, state.drivePos, etaFromHere);
-
-    // ETA bar updates
-    const remain = state.totalDistanceM - state.drivePos;
-    const remainS = remain / speed;
-    $("eta-distance").textContent = fmtDistance(remain);
-    $("eta-duration").textContent = fmtDuration(remainS);
-    $("eta-time").textContent = fmtClock(new Date(Date.now() + remainS * 1000));
+    renderUpcoming(r.signals, state.drivePos, (m) => m / speed);
+    renderEta();
   }
 }
 
@@ -510,25 +583,35 @@ $("plan").addEventListener("click", planRoute);
 [$("from"), $("to")].forEach(el =>
   el.addEventListener("keydown", (e) => { if (e.key === "Enter") planRoute(); })
 );
-
+$("swap").addEventListener("click", () => {
+  const a = $("from").value, b = $("to").value;
+  $("from").value = b;
+  $("to").value = a;
+});
+$("locate").addEventListener("click", async () => {
+  if (!navigator.geolocation) { showToast("Geolocatie niet beschikbaar."); return; }
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    try {
+      const { latitude, longitude } = pos.coords;
+      const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=16`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const json = await res.json();
+      $("from").value = json.display_name?.split(",").slice(0, 3).join(",") ?? `${latitude},${longitude}`;
+    } catch {
+      $("from").value = `${pos.coords.latitude},${pos.coords.longitude}`;
+    }
+  }, () => showToast("Kon je locatie niet ophalen."), { enableHighAccuracy: false, timeout: 5000 });
+});
 $("drive-toggle").addEventListener("click", () => {
-  if (!state.routeCoords.length) return;
+  if (state.activeRouteIdx < 0) return;
   if (state.driving) {
     state.driving = false;
-    $("drive-toggle").textContent = "Hervat rit";
+    $("drive-toggle").textContent = "Hervat";
   } else {
     state.driving = true;
     state.driveStart = performance.now() - (state.drivePos / avgSpeedMS()) * 1000;
     $("drive-toggle").textContent = "Pauze";
   }
-});
-
-$("reset").addEventListener("click", () => {
-  clearRoute();
-  state.routeCoords = [];
-  state.routeCumDist = [];
-  state.driving = false;
-  showSearch();
 });
 
 // ============ Boot ============

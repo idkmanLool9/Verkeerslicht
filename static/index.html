@@ -18,36 +18,49 @@
 <body>
   <div id="map" class="map"></div>
 
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-dot"></span>
-      <span class="brand-name">Verkeerslicht</span>
-    </div>
-    <div id="mode" class="mode">demo</div>
-  </header>
+  <!-- Sidebar (links-boven) -->
+  <aside class="sidebar">
+    <header class="sidebar-head">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">Verkeerslicht</span>
+      </div>
+      <div id="mode" class="mode">demo</div>
+    </header>
 
-  <!-- Search overlay -->
-  <section id="search" class="search">
-    <div class="search-card">
+    <div class="search-box">
       <div class="search-row">
-        <span class="search-pin from"></span>
-        <input id="from" class="search-input" type="text" placeholder="Vertrekpunt (bv. Amsterdam Centraal)" autocomplete="off" />
+        <span class="pin from" aria-hidden="true"></span>
+        <input id="from" class="search-input" type="text" placeholder="Vertrekpunt" autocomplete="off" />
+        <button class="locate-btn" id="locate" title="Mijn locatie" aria-label="Mijn locatie">⊙</button>
       </div>
-      <div class="search-divider"></div>
       <div class="search-row">
-        <span class="search-pin to"></span>
+        <span class="pin to" aria-hidden="true"></span>
         <input id="to" class="search-input" type="text" placeholder="Bestemming" autocomplete="off" />
+        <button class="swap-btn" id="swap" title="Wisselen" aria-label="Wisselen">⇅</button>
       </div>
-      <button id="plan" class="btn btn-primary">
+      <button id="plan" class="btn btn-primary btn-block">
         <span class="btn-icon">▶</span> Plan rit
       </button>
-      <p id="search-hint" class="search-hint">
-        Tip: probeer “Utrecht Centraal” → “Den Haag Centraal”.
-      </p>
     </div>
-  </section>
 
-  <!-- Bottom sheet during route -->
+    <div id="routes-list" class="routes-list hidden">
+      <div class="routes-title">routes</div>
+      <!-- gevuld in JS -->
+    </div>
+
+    <div class="legend">
+      <div class="legend-title">stoplichten</div>
+      <div class="legend-row">
+        <span class="legend-dot smart green"></span><span>slim — live status &amp; aftelling</span>
+      </div>
+      <div class="legend-row">
+        <span class="legend-dot classic"></span><span>klassiek — locatie bekend, geen timer</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Bottom sheet (verschijnt na route-keuze) -->
   <section id="sheet" class="sheet hidden" aria-hidden="true">
     <div class="sheet-handle"></div>
 
@@ -58,7 +71,10 @@
       </div>
       <div class="eta-meta">
         <div><span id="eta-duration">–</span> · <span id="eta-distance">– km</span></div>
-        <div><span id="eta-signals">0</span> stoplichten</div>
+        <div>
+          <span id="eta-signals">0</span> stoplichten ·
+          <span id="eta-smart">0</span> slim
+        </div>
       </div>
       <button id="drive-toggle" class="btn btn-primary btn-compact">Start rit</button>
     </div>
@@ -84,8 +100,6 @@
       <div class="upcoming-title">verderop</div>
       <ol id="upcoming-list" class="upcoming-list"></ol>
     </div>
-
-    <button id="reset" class="btn btn-ghost">Andere route</button>
   </section>
 
   <!-- Loading overlay -->
