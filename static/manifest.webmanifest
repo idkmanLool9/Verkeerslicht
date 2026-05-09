@@ -1,0 +1,19 @@
+{
+  "name": "Verkeerslicht",
+  "short_name": "Verkeerslicht",
+  "description": "Slimme stoplichten op je route met aftelling tot groen of rood.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0e14",
+  "theme_color": "#0a0e14",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='42' fill='%230a0e14'/%3E%3Crect x='66' y='32' width='60' height='128' rx='14' fill='%2316181d' stroke='%23222' stroke-width='2'/%3E%3Ccircle cx='96' cy='62' r='16' fill='%23ff3b30'/%3E%3Ccircle cx='96' cy='96' r='16' fill='%23ffcc00'/%3E%3Ccircle cx='96' cy='130' r='16' fill='%2334c759'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
