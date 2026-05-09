@@ -2,76 +2,78 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Verkeerslicht-status</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    }
-    body { margin: 0; padding: 2rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
-    h1 { margin: 0; font-size: 1.4rem; }
-    .mode {
-      font-size: 0.85rem; padding: 0.25rem 0.6rem; border-radius: 999px;
-      background: #2a2a2a; color: #ddd;
-    }
-    .mode.live   { background: #1b5e20; color: #fff; }
-    .mode.demo   { background: #5d4037; color: #fff; }
-    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; align-items: center; }
-    input { padding: 0.4rem 0.6rem; font-size: 1rem; width: 7rem; }
-    .light {
-      width: 140px; height: 360px;
-      background: #1e1e1e; border-radius: 24px; padding: 16px;
-      display: flex; flex-direction: column; gap: 12px; align-items: center;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-    }
-    .lamp {
-      width: 100px; height: 100px; border-radius: 50%;
-      background: #333; transition: background 0.2s, box-shadow 0.2s;
-    }
-    .lamp.red.on    { background: #e53935; box-shadow: 0 0 30px #e53935; }
-    .lamp.amber.on  { background: #fdd835; box-shadow: 0 0 30px #fdd835; }
-    .lamp.green.on  { background: #43a047; box-shadow: 0 0 30px #43a047; }
-    .info { font-size: 0.95rem; text-align: center; min-height: 4em; }
-    .countdown { font-size: 2rem; font-weight: 600; }
-    .meta { opacity: 0.7; font-size: 0.85rem; }
-    .error { color: #e53935; }
-    footer { margin-top: 1rem; font-size: 0.8rem; opacity: 0.6; max-width: 36rem; text-align: center; }
-    a { color: inherit; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c1116" />
+  <title>Verkeerslicht</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./style.css" />
 </head>
-<body>
-  <h1>Verkeerslicht-status</h1>
-  <div id="mode" class="mode">Modus laden…</div>
+<body class="state-unknown">
+  <div class="bg-glow" aria-hidden="true"></div>
 
-  <div class="controls">
-    <label>Kruising <input id="ix" type="number" value="9999" /></label>
-    <label>Signaalgroep <input id="sg" type="number" value="1" /></label>
-  </div>
-  <div class="controls">
-    <label style="font-size:0.85rem;opacity:0.8">
-      API-URL (leeg = browser-demo)
-      <input id="api-base" type="url" placeholder="https://mijn-server.fly.dev" style="width:18rem" />
-    </label>
-    <button id="api-save" type="button">Opslaan</button>
-  </div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">Verkeerslicht</span>
+    </div>
+    <div id="mode" class="mode">…</div>
+  </header>
 
-  <div class="light" aria-label="verkeerslicht">
-    <div id="red"   class="lamp red"></div>
-    <div id="amber" class="lamp amber"></div>
-    <div id="green" class="lamp green"></div>
-  </div>
+  <main class="hero">
+    <div class="light" aria-label="verkeerslicht">
+      <div id="red"   class="lamp red"></div>
+      <div id="amber" class="lamp amber"></div>
+      <div id="green" class="lamp green"></div>
+    </div>
 
-  <div class="info">
-    <div class="countdown"><span id="countdown">--</span> s</div>
-    <div id="phase" class="meta">--</div>
-    <div id="meta"  class="meta"></div>
-  </div>
+    <div class="countdown-block">
+      <div class="countdown-label" id="next-label">wachten op data</div>
+      <div class="countdown" id="countdown">--</div>
+      <div class="countdown-unit">seconden</div>
+    </div>
+  </main>
 
-  <footer>
-    Bron-formaat: SAE J2735 / ISO TS 19091 SPaT-berichten via NDW Talking Traffic /
-    UDAP. Op GitHub Pages draait alleen de demosimulator; voor live data is een
-    backend nodig (zie <a href="https://github.com/idkmanLool9/Verkeerslicht">README</a>).
+  <section class="card">
+    <div class="card-row">
+      <label class="field">
+        <span>Kruising</span>
+        <input id="ix" type="number" value="9999" inputmode="numeric" />
+      </label>
+      <label class="field">
+        <span>Signaalgroep</span>
+        <input id="sg" type="number" value="1" inputmode="numeric" />
+      </label>
+    </div>
+    <div class="phase-row">
+      <span class="phase-label">Fase</span>
+      <span id="phase" class="phase-value">–</span>
+    </div>
+    <div class="phase-row">
+      <span class="phase-label">Bron</span>
+      <span id="meta" class="phase-value muted">–</span>
+    </div>
+  </section>
+
+  <details class="settings">
+    <summary>Geavanceerd</summary>
+    <div class="card-row">
+      <label class="field grow">
+        <span>API-URL (leeg = browser-demo)</span>
+        <input id="api-base" type="url" placeholder="https://mijn-server.fly.dev" />
+      </label>
+      <button id="api-save" type="button" class="btn">Opslaan</button>
+    </div>
+    <p class="hint">
+      Op GitHub Pages draait alleen de browser-demo. Voor live UDAP-data
+      heb je een eigen backend nodig (zie de
+      <a href="https://github.com/idkmanLool9/Verkeerslicht">README</a>).
+    </p>
+  </details>
+
+  <footer class="foot">
+    SPaT-formaat: SAE J2735 / ISO TS 19091 via NDW Talking Traffic / UDAP.
   </footer>
 
   <script src="./app.js"></script>

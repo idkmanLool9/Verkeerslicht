@@ -1,6 +1,6 @@
 // Werkt in twee modi:
-// 1. "Live" - als er een backend bereikbaar is op /api (FastAPI uit de repo).
-// 2. "Demo" - statische browser-simulator. Gebruikt op GitHub Pages.
+// 1. "Live" / "Demo (server)" - praat met /api van een backend.
+// 2. "Demo (browser)" - statische simulator. Op GitHub Pages.
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,14 +15,41 @@ const CYCLE = [
   { phase: "stop-And-Remain",             color: "red",   duration: 22 },
 ];
 const TOTAL = CYCLE.reduce((a, c) => a + c.duration, 0);
-const DEMO_INTERSECTION_ID = 9999;
 const startEpoch = Date.now() / 1000;
 
-function setLamp(color) {
+const NEXT_LABEL = {
+  green: "tot geel",
+  amber: "tot rood",
+  red: "tot groen",
+  "red-amber": "tot groen",
+  unknown: "wachten op data",
+  dark: "lamp uit",
+};
+
+function applyState(color) {
+  document.body.classList.remove(
+    "state-red", "state-amber", "state-green", "state-unknown"
+  );
   for (const k of ["red", "amber", "green"]) $(k).classList.remove("on");
-  if (color === "red" || color === "red-amber" || color === "stop-Then-Proceed") $("red").classList.add("on");
-  if (color === "amber" || color === "red-amber") $("amber").classList.add("on");
-  if (color === "green") $("green").classList.add("on");
+
+  if (color === "red" || color === "stop-Then-Proceed") {
+    $("red").classList.add("on");
+    document.body.classList.add("state-red");
+  } else if (color === "red-amber") {
+    $("red").classList.add("on");
+    $("amber").classList.add("on");
+    document.body.classList.add("state-red");
+  } else if (color === "amber") {
+    $("amber").classList.add("on");
+    document.body.classList.add("state-amber");
+  } else if (color === "green") {
+    $("green").classList.add("on");
+    document.body.classList.add("state-green");
+  } else {
+    document.body.classList.add("state-unknown");
+  }
+
+  $("next-label").textContent = NEXT_LABEL[color] ?? "tot wissel";
 }
 
 function localPhase(signalGroup) {
@@ -46,30 +73,34 @@ function localPhase(signalGroup) {
   return null;
 }
 
-let mode = "loading"; // "live" | "demo"
+let mode = "loading"; // "live" | "demo-server" | "demo"
 
 async function detectMode() {
   const base = getApiBase();
-  try {
-    const res = await fetch(`${base}/api/health`, { cache: "no-store" });
-    if (res.ok) {
-      const data = await res.json();
-      mode = data.demo_mode ? "demo-server" : "live";
-    } else {
+  if (!base) {
+    mode = "demo";
+  } else {
+    try {
+      const res = await fetch(`${base}/api/health`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        mode = data.demo_mode ? "demo-server" : "live";
+      } else {
+        mode = "demo";
+      }
+    } catch {
       mode = "demo";
     }
-  } catch {
-    mode = "demo";
   }
   const badge = $("mode");
   if (mode === "live") {
-    badge.textContent = `Live (${base || "server"})`;
+    badge.textContent = "Live";
     badge.className = "mode live";
   } else if (mode === "demo-server") {
-    badge.textContent = `Demo (${base || "server"})`;
+    badge.textContent = "Demo · server";
     badge.className = "mode demo";
   } else {
-    badge.textContent = "Demo (browser)";
+    badge.textContent = "Demo";
     badge.className = "mode demo";
   }
 }
@@ -81,41 +112,45 @@ async function tick() {
   if (mode === "live" || mode === "demo-server") {
     const base = getApiBase();
     try {
-      const res = await fetch(`${base}/api/signals/${encodeURIComponent(ix)}/${encodeURIComponent(sg)}`);
+      const res = await fetch(
+        `${base}/api/signals/${encodeURIComponent(ix)}/${encodeURIComponent(sg)}`
+      );
       if (!res.ok) {
-        $("phase").className = "meta error";
-        $("phase").textContent = `Geen data (HTTP ${res.status})`;
-        setLamp("unknown");
+        applyState("unknown");
+        $("phase").textContent = `geen data (${res.status})`;
+        $("countdown").textContent = "--";
         return;
       }
-      const data = await res.json();
-      render(data);
+      render(await res.json());
     } catch (e) {
-      $("phase").className = "meta error";
-      $("phase").textContent = `Fout: ${e.message}`;
+      applyState("unknown");
+      $("phase").textContent = `fout: ${e.message}`;
+      $("countdown").textContent = "--";
     }
     return;
   }
 
-  // Browser-only demo
   const data = localPhase(sg);
   if (!data) {
-    setLamp("unknown");
+    applyState("unknown");
     return;
   }
   render(data);
 }
 
 function render(data) {
-  setLamp(data.color);
-  $("phase").className = "meta";
-  $("phase").textContent = `Fase: ${data.phase} (${data.color})`;
+  applyState(data.color);
+  $("phase").textContent = data.phase ?? "–";
   const secs = data.seconds_until_change;
-  $("countdown").textContent = secs == null ? "--" : Number(secs).toFixed(1);
-  const age = data.age_seconds == null ? null : Number(data.age_seconds).toFixed(1);
-  $("meta").textContent = age == null
-    ? `Bron: ${data.source ?? "server"}`
-    : `Bron-update: ${age}s geleden`;
+  $("countdown").textContent =
+    secs == null ? "--" : Math.max(0, Number(secs)).toFixed(1);
+  if (data.source) {
+    $("meta").textContent = data.source;
+  } else if (data.age_seconds != null) {
+    $("meta").textContent = `update ${Number(data.age_seconds).toFixed(1)}s geleden`;
+  } else {
+    $("meta").textContent = "live";
+  }
 }
 
 (async () => {
