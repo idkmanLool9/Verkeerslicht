@@ -41,10 +41,20 @@ aftelling. De API is bereikbaar onder `/api`:
 Slimme verkeerslichten in Nederland publiceren SPaT (Signal Phase and
 Timing) en MAP (topologie) berichten op de UDAP MQTT-broker, beheerd door
 Monotch namens NDW. Dit is publieke data, maar de toegang vereist wel een
-gratis ontwikkelaarsregistratie.
+account.
 
-1. Vraag een UDAP-account aan: <https://udap.nl>. Zie ook de developer-info
-   van Talking Traffic: <https://www.talking-traffic.com>.
+1. Vraag toegang aan bij Monotch (de beheerder van UDAP). Relevante
+   ingangen:
+   - **UDAP-beheerportaal**: <https://udap-home.tlex.eu/> - hier vraag je
+     TLC-ID's aan en beheer je je objecten.
+   - **Kaartviewer met live iVRI-status**: <https://map.udap.nl/app/> -
+     handig om te zien welke kruisingen aangesloten zijn.
+   - **Monotch support / FAQ**: <https://monotch.freshdesk.com/>.
+   - **Achtergrond + contact**: <https://monotch.com/nl/implementation/udap/>.
+   Voor commerciële applicaties of grootschalige datatoegang loopt het
+   verzoek via Monotch zelf (e-mail of het supportportaal). Voor
+   wegbeheerders en service providers van iVRI's is er een aparte
+   onboarding-procedure beschreven op Freshdesk.
 2. Na goedkeuring krijg je MQTT-credentials en een hostnaam. Vul ze in
    `.env`:
 
