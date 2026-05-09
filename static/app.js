@@ -396,7 +396,6 @@ function setActiveRoute(idx) {
     }
   }
   if (state.routes[idx]?.polyline) state.routes[idx].polyline.bringToFront();
-  if (state.driver) state.driver.bringToFront();
 }
 function selectRoute(idx) {
   if (idx < 0 || idx >= state.routes.length || idx === state.activeRouteIdx) return;
