@@ -48,6 +48,13 @@
     <label>Kruising <input id="ix" type="number" value="9999" /></label>
     <label>Signaalgroep <input id="sg" type="number" value="1" /></label>
   </div>
+  <div class="controls">
+    <label style="font-size:0.85rem;opacity:0.8">
+      API-URL (leeg = browser-demo)
+      <input id="api-base" type="url" placeholder="https://mijn-server.fly.dev" style="width:18rem" />
+    </label>
+    <button id="api-save" type="button">Opslaan</button>
+  </div>
 
   <div class="light" aria-label="verkeerslicht">
     <div id="red"   class="lamp red"></div>

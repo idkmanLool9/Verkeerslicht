@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,6 +47,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Verkeerslicht-status", lifespan=lifespan)
     app.state.settings = settings
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins) or ["*"],
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
 
     @app.get("/api/health")
     def health() -> dict:

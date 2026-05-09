@@ -1,0 +1,30 @@
+# Fly.io config. Voor de eerste deploy:
+#   fly launch --no-deploy --copy-config   (of: pas app-naam aan en `fly apps create`)
+#   fly secrets set UDAP_HOST=... UDAP_USERNAME=... UDAP_PASSWORD=...
+#   fly deploy
+#
+# Pas `app` aan naar een unieke naam.
+
+app = "verkeerslicht"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8000"
+  # Kommagescheiden, of "*" om Pages overal toe te staan.
+  CORS_ORIGINS = "*"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Belangrijk: NIET auto-stoppen, anders verbreekt de MQTT-subscription.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -25,6 +25,7 @@ class Settings:
     host: str
     port: int
     demo_mode: bool
+    cors_origins: tuple[str, ...]
 
     @property
     def has_broker(self) -> bool:
@@ -36,6 +37,8 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    raw_origins = os.getenv("CORS_ORIGINS", "*").strip()
+    origins = tuple(o.strip() for o in raw_origins.split(",") if o.strip())
     return Settings(
         udap_host=os.getenv("UDAP_HOST", "").strip(),
         udap_port=int(os.getenv("UDAP_PORT", "8883")),
@@ -47,4 +50,5 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
         demo_mode=_bool("DEMO_MODE", False),
+        cors_origins=origins,
     )

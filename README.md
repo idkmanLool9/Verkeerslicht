@@ -114,6 +114,67 @@ dan praat hij met de FastAPI; zo niet, dan draait er een browser-side
 40-seconden cyclus (groen 15s, geel 3s, rood 22s) zodat je de UI kunt
 zien.
 
+## Volledig en gratis live laten draaien
+
+Voor live UDAP-data heb je twee dingen nodig:
+
+### 1. UDAP-credentials (de echte hobbel)
+
+Toegang tot de MQTT-feed van Talking Traffic loopt via **Monotch** en
+**NDW**. Er is geen self-service "developer signup". Wat je kunt
+proberen:
+
+- **Studenten / onderzoek**: e-mail Monotch (zie
+  <https://monotch.com/contact/>) of NDW (<https://www.ndw.nu/contact>)
+  met een korte projectomschrijving en vraag om dev-toegang.
+- **Wegbeheerder of leverancier**: vraag een TLC-ID/account aan via
+  <https://udap-home.tlex.eu/> en de procedure op
+  <https://monotch.freshdesk.com/>.
+- **Geen toegang? Demomodus**: alles werkt verder hetzelfde, alleen met
+  gesimuleerde data.
+
+Zonder credentials valt de app automatisch terug op demomodus, dus je
+kunt alvast deployen en de creds later toevoegen.
+
+### 2. Een server die altijd aan staat
+
+GitHub Pages serveert geen Python en Render-/Railway-/Vercel-serverless
+slaapt na inactiviteit (de MQTT-subscription valt dan weg). Je hebt iets
+nodig dat 24/7 één proces draait. Drie écht gratis opties:
+
+| Optie                      | Gratis?      | Setup           | Opmerking |
+|----------------------------|--------------|-----------------|-----------|
+| **Oracle Cloud Free Tier** | Ja, voor altijd (Always Free) | VM, Docker | 1 ARM Ampere VM (4 cores / 24GB) of 2 AMD micro-VMs. Creditcard nodig voor verificatie, niet voor afrekenen. Meest robuust. |
+| **Fly.io**                 | Met `$5` trial-credit; daarna ~`$2/mnd` voor 1 shared-cpu/256MB | `fly deploy` | Eenvoudigste DX. Zie `fly.toml`. |
+| **Eigen Pi/PC**            | Stroom + thuisinternet | Docker + Cloudflare Tunnel of Tailscale Funnel | `docker build -t verkeerslicht . && docker run -p 8000:8000 ...`. Cloudflare Tunnel geeft je gratis publieke HTTPS-URL. |
+
+**Slaapwekkers (Render free, Vercel, Cloud Run idle scale-to-zero)
+zijn ongeschikt** — een MQTT-subscription overleeft een sleep niet.
+
+### 3. Aan elkaar knopen
+
+1. Deploy de backend met Docker (zie `Dockerfile`). Voorbeeld Fly.io:
+   ```bash
+   fly launch --no-deploy --copy-config       # eerste keer; pas app-naam aan
+   fly secrets set UDAP_HOST=... UDAP_PORT=8883 \
+                   UDAP_USERNAME=... UDAP_PASSWORD=... \
+                   UDAP_USE_TLS=true \
+                   CORS_ORIGINS="https://<gebruiker>.github.io"
+   fly deploy
+   ```
+2. Op je Pages-pagina: vul bij **API-URL** je backend-URL in (bv.
+   `https://verkeerslicht.fly.dev`) en klik **Opslaan**. De badge
+   springt op "Live".
+3. Werkt het niet? Check `fly logs` (of `docker logs`). Meest voorkomende
+   fouten: verkeerd MQTT-topic, of CORS niet ingesteld op de Pages-URL.
+
+### 4. Helemaal zonder server (alleen demo)
+
+Heb je geen UDAP-creds en geen zin in een VM? Skip alles hierboven en
+laat de Pages-deploy staan. Je krijgt dan een werkend UI met een
+gesimuleerd verkeerslicht — perfect voor demo's of als presentatie van
+het idee.
+
 ## Andere bronnen
 
 - **NDW Open Data Portal** (<https://opendata.ndw.nu>) - historische en

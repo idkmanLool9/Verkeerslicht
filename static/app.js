@@ -4,6 +4,11 @@
 
 const $ = (id) => document.getElementById(id);
 
+const API_BASE_KEY = "verkeerslicht.apiBase";
+function getApiBase() {
+  return (localStorage.getItem(API_BASE_KEY) || "").replace(/\/+$/, "");
+}
+
 const CYCLE = [
   { phase: "permissive-Movement-Allowed", color: "green", duration: 15 },
   { phase: "permissive-clearance",        color: "amber", duration: 3  },
@@ -44,8 +49,9 @@ function localPhase(signalGroup) {
 let mode = "loading"; // "live" | "demo"
 
 async function detectMode() {
+  const base = getApiBase();
   try {
-    const res = await fetch("/api/health", { cache: "no-store" });
+    const res = await fetch(`${base}/api/health`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       mode = data.demo_mode ? "demo-server" : "live";
@@ -57,10 +63,10 @@ async function detectMode() {
   }
   const badge = $("mode");
   if (mode === "live") {
-    badge.textContent = "Live (server)";
+    badge.textContent = `Live (${base || "server"})`;
     badge.className = "mode live";
   } else if (mode === "demo-server") {
-    badge.textContent = "Demo (server)";
+    badge.textContent = `Demo (${base || "server"})`;
     badge.className = "mode demo";
   } else {
     badge.textContent = "Demo (browser)";
@@ -73,8 +79,9 @@ async function tick() {
   const sg = $("sg").value;
 
   if (mode === "live" || mode === "demo-server") {
+    const base = getApiBase();
     try {
-      const res = await fetch(`/api/signals/${encodeURIComponent(ix)}/${encodeURIComponent(sg)}`);
+      const res = await fetch(`${base}/api/signals/${encodeURIComponent(ix)}/${encodeURIComponent(sg)}`);
       if (!res.ok) {
         $("phase").className = "meta error";
         $("phase").textContent = `Geen data (HTTP ${res.status})`;
@@ -112,6 +119,13 @@ function render(data) {
 }
 
 (async () => {
+  $("api-base").value = getApiBase();
+  $("api-save").addEventListener("click", async () => {
+    const v = $("api-base").value.trim().replace(/\/+$/, "");
+    if (v) localStorage.setItem(API_BASE_KEY, v);
+    else localStorage.removeItem(API_BASE_KEY);
+    await detectMode();
+  });
   await detectMode();
   setInterval(tick, 200);
   tick();
