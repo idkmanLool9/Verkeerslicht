@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verkeerslicht-status</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    body { margin: 0; padding: 2rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
+    h1 { margin: 0; font-size: 1.4rem; }
+    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+    input { padding: 0.4rem 0.6rem; font-size: 1rem; width: 7rem; }
+    .light {
+      width: 140px; height: 360px;
+      background: #1e1e1e; border-radius: 24px; padding: 16px;
+      display: flex; flex-direction: column; gap: 12px; align-items: center;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    }
+    .lamp {
+      width: 100px; height: 100px; border-radius: 50%;
+      background: #333; transition: background 0.2s, box-shadow 0.2s;
+    }
+    .lamp.red.on    { background: #e53935; box-shadow: 0 0 30px #e53935; }
+    .lamp.amber.on  { background: #fdd835; box-shadow: 0 0 30px #fdd835; }
+    .lamp.green.on  { background: #43a047; box-shadow: 0 0 30px #43a047; }
+    .info { font-size: 0.95rem; text-align: center; min-height: 4em; }
+    .countdown { font-size: 2rem; font-weight: 600; }
+    .meta { opacity: 0.7; font-size: 0.85rem; }
+    .error { color: #e53935; }
+  </style>
+</head>
+<body>
+  <h1>Verkeerslicht-status</h1>
+  <div class="controls">
+    <label>Kruising <input id="ix" type="number" value="9999" /></label>
+    <label>Signaalgroep <input id="sg" type="number" value="1" /></label>
+  </div>
+  <div class="light" aria-label="verkeerslicht">
+    <div id="red"   class="lamp red"></div>
+    <div id="amber" class="lamp amber"></div>
+    <div id="green" class="lamp green"></div>
+  </div>
+  <div class="info">
+    <div class="countdown"><span id="countdown">--</span> s</div>
+    <div id="phase" class="meta">--</div>
+    <div id="meta"  class="meta"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function setLamp(color) {
+      for (const k of ["red", "amber", "green"]) {
+        $(k).classList.remove("on");
+      }
+      if (color === "red" || color === "red-amber" || color === "stop-Then-Proceed") $("red").classList.add("on");
+      if (color === "amber" || color === "red-amber") $("amber").classList.add("on");
+      if (color === "green") $("green").classList.add("on");
+    }
+
+    async function poll() {
+      const ix = encodeURIComponent($("ix").value);
+      const sg = encodeURIComponent($("sg").value);
+      try {
+        const res = await fetch(`/api/signals/${ix}/${sg}`);
+        if (!res.ok) {
+          $("phase").textContent = `Geen data (HTTP ${res.status})`;
+          $("phase").className = "meta error";
+          setLamp("unknown");
+          return;
+        }
+        const data = await res.json();
+        setLamp(data.color);
+        $("phase").className = "meta";
+        $("phase").textContent = `Fase: ${data.phase} (${data.color})`;
+        const secs = data.seconds_until_change;
+        $("countdown").textContent = secs == null ? "--" : secs.toFixed(1);
+        $("meta").textContent = `Bron-update: ${data.age_seconds.toFixed(1)}s geleden`;
+      } catch (e) {
+        $("phase").textContent = `Fout: ${e.message}`;
+        $("phase").className = "meta error";
+      }
+    }
+
+    setInterval(poll, 500);
+    poll();
+  </script>
+</body>
+</html>
