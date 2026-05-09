@@ -3,79 +3,104 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0c1116" />
-  <title>Verkeerslicht</title>
+  <meta name="theme-color" content="#0a0e14" />
+  <title>Verkeerslicht — slimme stoplichten op je route</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin="" />
   <link rel="stylesheet" href="./style.css" />
 </head>
-<body class="state-unknown">
-  <div class="bg-glow" aria-hidden="true"></div>
+<body>
+  <div id="map" class="map"></div>
 
   <header class="topbar">
     <div class="brand">
       <span class="brand-dot"></span>
       <span class="brand-name">Verkeerslicht</span>
     </div>
-    <div id="mode" class="mode">…</div>
+    <div id="mode" class="mode">demo</div>
   </header>
 
-  <main class="hero">
-    <div class="light" aria-label="verkeerslicht">
-      <div id="red"   class="lamp red"></div>
-      <div id="amber" class="lamp amber"></div>
-      <div id="green" class="lamp green"></div>
-    </div>
-
-    <div class="countdown-block">
-      <div class="countdown-label" id="next-label">wachten op data</div>
-      <div class="countdown" id="countdown">--</div>
-      <div class="countdown-unit">seconden</div>
-    </div>
-  </main>
-
-  <section class="card">
-    <div class="card-row">
-      <label class="field">
-        <span>Kruising</span>
-        <input id="ix" type="number" value="9999" inputmode="numeric" />
-      </label>
-      <label class="field">
-        <span>Signaalgroep</span>
-        <input id="sg" type="number" value="1" inputmode="numeric" />
-      </label>
-    </div>
-    <div class="phase-row">
-      <span class="phase-label">Fase</span>
-      <span id="phase" class="phase-value">–</span>
-    </div>
-    <div class="phase-row">
-      <span class="phase-label">Bron</span>
-      <span id="meta" class="phase-value muted">–</span>
+  <!-- Search overlay -->
+  <section id="search" class="search">
+    <div class="search-card">
+      <div class="search-row">
+        <span class="search-pin from"></span>
+        <input id="from" class="search-input" type="text" placeholder="Vertrekpunt (bv. Amsterdam Centraal)" autocomplete="off" />
+      </div>
+      <div class="search-divider"></div>
+      <div class="search-row">
+        <span class="search-pin to"></span>
+        <input id="to" class="search-input" type="text" placeholder="Bestemming" autocomplete="off" />
+      </div>
+      <button id="plan" class="btn btn-primary">
+        <span class="btn-icon">▶</span> Plan rit
+      </button>
+      <p id="search-hint" class="search-hint">
+        Tip: probeer “Utrecht Centraal” → “Den Haag Centraal”.
+      </p>
     </div>
   </section>
 
-  <details class="settings">
-    <summary>Geavanceerd</summary>
-    <div class="card-row">
-      <label class="field grow">
-        <span>API-URL (leeg = browser-demo)</span>
-        <input id="api-base" type="url" placeholder="https://mijn-server.fly.dev" />
-      </label>
-      <button id="api-save" type="button" class="btn">Opslaan</button>
+  <!-- Bottom sheet during route -->
+  <section id="sheet" class="sheet hidden" aria-hidden="true">
+    <div class="sheet-handle"></div>
+
+    <div class="sheet-eta">
+      <div>
+        <div class="eta-label">aankomst</div>
+        <div id="eta-time" class="eta-time">--:--</div>
+      </div>
+      <div class="eta-meta">
+        <div><span id="eta-duration">–</span> · <span id="eta-distance">– km</span></div>
+        <div><span id="eta-signals">0</span> stoplichten</div>
+      </div>
+      <button id="drive-toggle" class="btn btn-primary btn-compact">Start rit</button>
     </div>
-    <p class="hint">
-      Op GitHub Pages draait alleen de browser-demo. Voor live UDAP-data
-      heb je een eigen backend nodig (zie de
-      <a href="https://github.com/idkmanLool9/Verkeerslicht">README</a>).
-    </p>
-  </details>
 
-  <footer class="foot">
-    SPaT-formaat: SAE J2735 / ISO TS 19091 via NDW Talking Traffic / UDAP.
-  </footer>
+    <div class="next-light" id="next-light">
+      <div class="lamp-mini">
+        <div id="mini-red"   class="lamp-dot red"></div>
+        <div id="mini-amber" class="lamp-dot amber"></div>
+        <div id="mini-green" class="lamp-dot green"></div>
+      </div>
+      <div class="next-info">
+        <div class="next-label">volgend stoplicht</div>
+        <div class="next-distance"><span id="next-distance">–</span></div>
+        <div class="next-phase"><span id="next-phase">geen lichten</span></div>
+      </div>
+      <div class="next-countdown">
+        <div id="next-countdown">--</div>
+        <div class="next-countdown-unit">s</div>
+      </div>
+    </div>
 
+    <div class="upcoming">
+      <div class="upcoming-title">verderop</div>
+      <ol id="upcoming-list" class="upcoming-list"></ol>
+    </div>
+
+    <button id="reset" class="btn btn-ghost">Andere route</button>
+  </section>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <div id="loading-text">Route plannen…</div>
+  </div>
+
+  <!-- Toast / errors -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""></script>
   <script src="./app.js"></script>
 </body>
 </html>

@@ -105,4 +105,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def app_js():
             return FileResponse(STATIC_DIR / "app.js", media_type="text/javascript")
 
+        @app.get("/style.css")
+        def style_css():
+            return FileResponse(STATIC_DIR / "style.css", media_type="text/css")
+
     return app
