@@ -1166,6 +1166,50 @@ function makeDriverMarker(lat, lon) {
   });
   return L.marker([lat, lon], { icon, zIndexOffset: 1000 }).addTo(map);
 }
+// ============ Chase-camera (Flitsmeister-stijl) ============
+// Zoom in, draai de kaart zodat de rijrichting omhoog wijst, plaats de
+// auto in het onderste derde deel zodat de weg vóór je goed zichtbaar is.
+// Heading wordt low-pass gefilterd zodat het beeld niet schokt bij ruis.
+let chasePrevZoom = null;
+let chaseHeading = 0;            // gefilterde heading in graden
+const CHASE_ZOOM = 17;
+const CHASE_SMOOTHING = 0.18;    // hoe snel we naar nieuwe heading interpoleren
+
+function enterChaseMode() {
+  document.body.classList.add("chase-mode");
+  chasePrevZoom = map.getZoom();
+  if (chasePrevZoom < CHASE_ZOOM) map.setZoom(CHASE_ZOOM);
+  // Initiele heading uit huidige route bepalen, anders blijft hij op 0
+  // staan tot de eerste tick.
+  const r = state.routes[state.activeRouteIdx];
+  if (r) {
+    const p = pointAtDistance(r.coords, r.cumDist, state.drivePos);
+    const ahead = pointAtDistance(r.coords, r.cumDist, Math.min(r.distance, state.drivePos + 25));
+    chaseHeading = bearingDeg(p, ahead);
+    document.body.style.setProperty("--chase-heading", `${-chaseHeading}deg`);
+  }
+}
+function exitChaseMode() {
+  document.body.classList.remove("chase-mode");
+  document.body.style.removeProperty("--chase-heading");
+  if (chasePrevZoom != null && map.getZoom() > chasePrevZoom + 1) {
+    map.setZoom(chasePrevZoom);
+  }
+  chasePrevZoom = null;
+}
+function updateChaseHeading(rawDeg) {
+  if (!document.body.classList.contains("chase-mode")) return;
+  // Kortste weg om naar de doelhoek te draaien (vermijd 359→0 sprong).
+  let delta = rawDeg - chaseHeading;
+  while (delta > 180) delta -= 360;
+  while (delta < -180) delta += 360;
+  chaseHeading += delta * CHASE_SMOOTHING;
+  // Normalize naar [-180, 180] voor compactheid
+  while (chaseHeading > 180) chaseHeading -= 360;
+  while (chaseHeading < -180) chaseHeading += 360;
+  document.body.style.setProperty("--chase-heading", `${-chaseHeading}deg`);
+}
+
 function setDriverHeading(deg) {
   const el = state.driver?.getElement()?.querySelector(".driver-marker svg");
   if (el) el.style.transform = `rotate(${deg}deg)`;
@@ -1866,14 +1910,29 @@ function tick() {
       $("drive-toggle").textContent = "Start rit";
       $("drive-stop").classList.add("hidden");
       releaseWakeLock();
+      exitChaseMode();
       finishDrive();
     }
     const p = pointAtDistance(r.coords, r.cumDist, state.drivePos);
     if (state.driver) state.driver.setLatLng(p);
-    if (state.driving && !state.followGps) map.panTo(p, { animate: false });
     // Heading: kijk 25m vooruit
     const lookAhead = pointAtDistance(r.coords, r.cumDist, Math.min(r.distance, state.drivePos + 25));
-    setDriverHeading(bearingDeg(p, lookAhead));
+    const headingDeg = bearingDeg(p, lookAhead);
+    setDriverHeading(headingDeg);
+    if (state.driving) {
+      // Update chase-camera rotatie (gladgestreken).
+      updateChaseHeading(headingDeg);
+      if (!state.followGps) {
+        // Pan iets vooruit (~80m) zodat de auto onderaan het beeld staat
+        // en je de weg vóór je ziet — zoals Flitsmeister/Google.
+        if (document.body.classList.contains("chase-mode")) {
+          const aheadFar = pointAtDistance(r.coords, r.cumDist, Math.min(r.distance, state.drivePos + 80));
+          map.panTo(aheadFar, { animate: false });
+        } else {
+          map.panTo(p, { animate: false });
+        }
+      }
+    }
     setSpeedometer(v * 3.6);
   } else {
     tick._lastTickMs = null;
@@ -2024,6 +2083,7 @@ function stopRit() {
   state.driving = false;
   tick._lastTickMs = null;
   releaseWakeLock();
+  exitChaseMode();
   if (liveViewTimer) { clearInterval(liveViewTimer); liveViewTimer = null; }
   if (state.liveMarker) { map.removeLayer(state.liveMarker); state.liveMarker = null; }
   $("live-banner")?.classList.add("hidden");
@@ -2316,6 +2376,7 @@ $("drive-toggle").addEventListener("click", () => {
     tick._lastTickMs = null;
     $("drive-toggle").textContent = "Hervat";
     releaseWakeLock();
+    exitChaseMode();
   } else {
     state.driving = true;
     tick._lastTickMs = null;
@@ -2323,6 +2384,7 @@ $("drive-toggle").addEventListener("click", () => {
     $("drive-toggle").textContent = "Pauze";
     $("drive-stop").classList.remove("hidden");
     requestWakeLock();
+    enterChaseMode();
   }
 });
 $("drive-stop").addEventListener("click", stopRit);
