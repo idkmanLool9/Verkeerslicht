@@ -116,12 +116,21 @@ const state = {
   rafId: null,
   profile: "driving",
   preferFewest: false,
+  avoidMotorway: localStorage.getItem("verkeerslicht.avoidMotorway") === "1",
+  avoidToll:     localStorage.getItem("verkeerslicht.avoidToll")     === "1",
+  avoidFerry:    localStorage.getItem("verkeerslicht.avoidFerry")    === "1",
+  reports: JSON.parse(localStorage.getItem("verkeerslicht.reports") || "[]"),
   voiceOn: false,
   gpsWatch: null,
   followGps: false,
   cityLightsLayer: null,
   cityLightsZoomHandler: null,
   spokenLightIds: new Set(),
+  spokenStepIdx: -1,
+  spokenStepStage: null,
+  spokenGlosa: null,
+  liveMarker: null,
+  reportLayer: null,
   driveStats: { lights: 0, red: 0, amber: 0, green: 0, classic: 0, startedAt: 0 },
   apiBase: localStorage.getItem("verkeerslicht.apiBase") || "",
   vehicle: loadVehicle(),
@@ -498,6 +507,70 @@ function vehicleCo2PerKm(vehicle) {
   return null;
 }
 
+// ============ Meldingen (crowdsourcing-light, lokaal) ============
+const REPORT_META = {
+  flitser:     { emoji: "📷", color: "#1a73e8", label: "Flitser" },
+  file:        { emoji: "🚗", color: "#ff9500", label: "File" },
+  ongeval:     { emoji: "💥", color: "#ff3b30", label: "Ongeval" },
+  wegwerk:     { emoji: "🚧", color: "#ffcc00", label: "Wegwerk" },
+  obstakel:    { emoji: "⚠",  color: "#ff9500", label: "Obstakel" },
+  spookrijder: { emoji: "↩",  color: "#ff3b30", label: "Spookrijder" },
+};
+const REPORT_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+function pruneReports() {
+  const cutoff = Date.now() - REPORT_TTL_MS;
+  state.reports = (state.reports || []).filter(r => (r.t || 0) > cutoff);
+  saveReports();
+}
+function saveReports() {
+  try { localStorage.setItem("verkeerslicht.reports", JSON.stringify(state.reports || [])); } catch {}
+}
+function reportPosition() {
+  // Live GPS heeft voorrang, dan de huidige rij-positie, dan kaart-midden.
+  if (state.lastGps) return [state.lastGps.lat, state.lastGps.lon];
+  if (state.driving && state.routes[state.activeRouteIdx]) {
+    const r = state.routes[state.activeRouteIdx];
+    return pointAtDistance(r.coords, r.cumDist, state.drivePos);
+  }
+  const c = map?.getCenter?.();
+  return c ? [c.lat, c.lng] : null;
+}
+function addReport(type) {
+  const pos = reportPosition();
+  if (!pos) { showToast("Geen locatie beschikbaar.", "error"); return; }
+  const rep = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, type, lat: pos[0], lon: pos[1], t: Date.now() };
+  state.reports.push(rep);
+  saveReports();
+  drawReportMarker(rep);
+  const meta = REPORT_META[type];
+  showToast(`${meta?.emoji ?? ""} ${meta?.label ?? type} gemeld.`);
+  if (state.voiceOn) speak(`${meta?.label ?? type} gemeld`);
+}
+function drawReportMarker(rep) {
+  const meta = REPORT_META[rep.type] || { emoji: "⚠", color: "#999" };
+  const icon = L.divIcon({
+    className: "report-marker",
+    html: `<div class="rm-pin" style="background:${meta.color}">${meta.emoji}</div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 28],
+  });
+  const m = L.marker([rep.lat, rep.lon], { icon, title: meta.label }).addTo(map);
+  const ageMin = Math.max(1, Math.round((Date.now() - rep.t) / 60000));
+  m.bindPopup(`<b>${meta.label}</b><br>${ageMin} min geleden`);
+  m._reportId = rep.id;
+  if (!state.reportLayer) state.reportLayer = [];
+  state.reportLayer.push(m);
+}
+function redrawReports() {
+  pruneReports();
+  if (state.reportLayer) {
+    for (const m of state.reportLayer) map.removeLayer(m);
+  }
+  state.reportLayer = [];
+  for (const r of state.reports) drawReportMarker(r);
+}
+
 // ============ Confetti ============
 function fireConfetti(durationMs = 2000) {
   const cv = $("confetti");
@@ -558,7 +631,15 @@ async function suggest(query) {
 async function fetchRoutes(coords) {
   const profile = PROFILE_TO_OSRM[state.profile] ?? "driving";
   const list = coords.map(c => `${c.lon},${c.lat}`).join(";");
-  const url = `${OSRM}/${profile}/${list}?alternatives=${coords.length === 2 ? 3 : 0}&overview=full&geometries=geojson&steps=false`;
+  // OSRM exclude-classes (auto-profile only). Demo-server: motorway, toll, ferry.
+  const excludes = [];
+  if (state.profile === "driving") {
+    if (state.avoidMotorway) excludes.push("motorway");
+    if (state.avoidToll) excludes.push("toll");
+    if (state.avoidFerry) excludes.push("ferry");
+  }
+  const excludeParam = excludes.length ? `&exclude=${excludes.join(",")}` : "";
+  const url = `${OSRM}/${profile}/${list}?alternatives=${coords.length === 2 ? 3 : 0}&overview=full&geometries=geojson&steps=true${excludeParam}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Routing mislukt (${res.status})`);
   const json = await res.json();
@@ -567,13 +648,131 @@ async function fetchRoutes(coords) {
     const c = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
     const cum = [0];
     for (let i = 1; i < c.length; i++) cum.push(cum[i - 1] + haversine(c[i - 1], c[i]));
+    // Manoeuvre-stappen plat-trekken over alle legs, met cumulatieve afstand
+    // langs de hele route. Bron: OSRM step.maneuver.{type,modifier,location},
+    // step.distance (m), step.name (straat).
+    const steps = [];
+    let cumStep = 0;
+    for (const leg of r.legs || []) {
+      for (const s of leg.steps || []) {
+        steps.push({
+          fromM: cumStep,
+          toM: cumStep + (s.distance || 0),
+          distance: s.distance || 0,
+          name: s.name || "",
+          ref: s.ref || "",
+          type: s.maneuver?.type || "",
+          modifier: s.maneuver?.modifier || "",
+          location: s.maneuver?.location ? [s.maneuver.location[1], s.maneuver.location[0]] : null,
+        });
+        cumStep += s.distance || 0;
+      }
+    }
     return {
       coords: c, cumDist: cum,
       distance: r.distance, duration: r.duration,
+      steps,
       legSummary: r.legs?.map(l => l.summary).filter(Boolean).join(", ") || "",
     };
   });
 }
+// EV-routing: laadstops uit OSM (amenity=charging_station) langs route.
+// Roept Overpass alleen aan als voertuig elektrisch is en route significant
+// is t.o.v. de actieradius. Anders skip — bespaart een API-call voor 99%
+// van de gebruikers die op benzine rijden.
+function vehicleIsElectric(v) {
+  if (!v) return false;
+  const b = (v.brandstof || "").toLowerCase();
+  return b.includes("elektriciteit") || b.includes("waterstof") || (v.actieradiusKm > 0);
+}
+async function fetchChargingStationsBbox(bbox) {
+  const query = `[out:json][timeout:20];node["amenity"="charging_station"](${bbox});out body 200;`;
+  try {
+    const res = await fetch(OVERPASS, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.elements ?? [];
+  } catch { return []; }
+}
+async function backgroundLoadChargingStations(routes) {
+  const v = state.vehicle;
+  if (!vehicleIsElectric(v)) return;
+  // Drempel: pas suggereren bij routes > 50% van actieradius (of 200km als
+  // we geen range weten — typische EV).
+  const range = v.actieradiusKm || 350;
+  const significant = routes.some(r => r.distance / 1000 > range * 0.5);
+  if (!significant) return;
+  const allCoords = routes.flatMap(r => r.coords);
+  const bbox = bboxOfCoords(allCoords, 0.05);
+  const stations = await fetchChargingStationsBbox(bbox);
+  for (const r of routes) {
+    r.chargingStops = pickChargingStops(stations, r, range);
+  }
+  drawChargingStops(routes);
+  renderEvHint();
+}
+function pickChargingStops(stations, route, rangeKm) {
+  const out = [];
+  for (const s of stations) {
+    if (s.lat == null || s.lon == null) continue;
+    const proj = projectOnPolyline([s.lat, s.lon], route.coords, route.cumDist);
+    if (proj.minD > 800) continue; // max 800m van route
+    out.push({
+      lat: s.lat, lon: s.lon,
+      distAlong: proj.distAlong,
+      name: s.tags?.operator || s.tags?.network || s.tags?.brand || "Laadpunt",
+      sockets: s.tags?.["socket:type2"] || s.tags?.["capacity"] || null,
+    });
+  }
+  out.sort((a, b) => a.distAlong - b.distAlong);
+  // Plan stops op ~70% van resterende range (buffer voor zoeken/onverwacht)
+  const stride = rangeKm * 1000 * 0.7;
+  const picked = [];
+  let target = stride;
+  for (const s of out) {
+    if (s.distAlong >= target && s.distAlong < route.distance - 5000) {
+      picked.push(s);
+      target = s.distAlong + stride;
+    }
+  }
+  return picked;
+}
+function drawChargingStops(routes) {
+  for (const r of routes) {
+    if (r._chargingMarkers) {
+      for (const m of r._chargingMarkers) map.removeLayer(m);
+    }
+    r._chargingMarkers = [];
+    if (!r.chargingStops?.length) continue;
+    if (state.routes.indexOf(r) !== state.activeRouteIdx) continue;
+    for (const c of r.chargingStops) {
+      const icon = L.divIcon({
+        className: "charging-marker",
+        html: `<div class="cm-pin">⚡</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 28],
+      });
+      const m = L.marker([c.lat, c.lon], { icon, title: c.name }).addTo(map);
+      m.bindPopup(`<b>⚡ ${c.name}</b><br>${(c.distAlong / 1000).toFixed(1)} km onderweg`);
+      r._chargingMarkers.push(m);
+    }
+  }
+}
+function renderEvHint() {
+  const r = state.routes[state.activeRouteIdx];
+  const hint = $("ev-hint");
+  if (!hint) return;
+  if (!r?.chargingStops?.length) { hint.classList.add("hidden"); return; }
+  hint.classList.remove("hidden");
+  const n = r.chargingStops.length;
+  const v = state.vehicle;
+  const range = v?.actieradiusKm || 350;
+  hint.textContent = `⚡ Route is ${(r.distance / 1000).toFixed(0)} km, je actieradius ${Math.round(range)} km — ${n} laadstop${n > 1 ? "s" : ""} voorgesteld`;
+}
+
 async function fetchSignalsBbox(bbox) {
   const query = `[out:json][timeout:25];node["highway"="traffic_signals"](${bbox});out body;`;
   const res = await fetch(OVERPASS, {
@@ -987,6 +1186,97 @@ function setSpeedometer(kmh) {
   $("speedo-num").textContent = String(Math.round(kmh));
 }
 
+// ============ Manoeuvre-banner ============
+// OSRM-modifier → pijl/icoon. Meeste types hebben een richting; arrive en
+// depart krijgen vlag-iconen omdat ze begin/eind van de route markeren.
+const MANEUVER_ARROWS = {
+  "left": "↰", "slight left": "↖", "sharp left": "⬅",
+  "right": "↱", "slight right": "↗", "sharp right": "➡",
+  "straight": "↑", "uturn": "↩",
+  "merge": "↗", "fork left": "↖", "fork right": "↗",
+  "rampleft": "↖", "rampright": "↗",
+};
+const MANEUVER_TYPE_FALLBACK = {
+  "depart": "↑", "arrive": "🏁", "roundabout": "⟳",
+  "rotary": "⟳", "exit roundabout": "↰", "exit rotary": "↰",
+};
+function maneuverArrow(step) {
+  if (!step) return "↑";
+  const mod = (step.modifier || "").toLowerCase();
+  if (MANEUVER_ARROWS[mod]) return MANEUVER_ARROWS[mod];
+  return MANEUVER_TYPE_FALLBACK[step.type] || "↑";
+}
+function maneuverText(step) {
+  if (!step) return "";
+  if (step.type === "arrive") return "Bestemming";
+  if (step.type === "depart") return step.name || "Vertrek";
+  const mod = step.modifier || "";
+  const name = step.ref || step.name || "";
+  if (step.type === "roundabout" || step.type === "rotary") {
+    return name ? `Rotonde, ${name}` : "Rotonde";
+  }
+  if (step.type === "merge") return name ? `Voeg in op ${name}` : "Voeg in";
+  if (step.type === "fork") return name ? `Houd ${mod}, ${name}` : `Houd ${mod}`;
+  if (mod === "uturn") return "Keer om";
+  if (mod === "straight") return name ? `Rechtdoor op ${name}` : "Rechtdoor";
+  if (mod) {
+    const dir = { left: "links", right: "rechts", "slight left": "iets links", "slight right": "iets rechts", "sharp left": "scherp links", "sharp right": "scherp rechts" }[mod] || mod;
+    return name ? `${dir.charAt(0).toUpperCase() + dir.slice(1)} naar ${name}` : dir.charAt(0).toUpperCase() + dir.slice(1);
+  }
+  return name || "Volg de weg";
+}
+// Vind de "actuele" stap: de stap waarvan de manoeuvre VOOR ons ligt.
+// Dat is de eerste stap waar drivePos < step.toM (wij hebben de eindpijl
+// van die stap nog niet bereikt).
+function findCurrentStep(route, distM) {
+  const steps = route.steps || [];
+  for (let i = 0; i < steps.length; i++) {
+    if (distM < steps[i].toM - 1) return { step: steps[i], next: steps[i + 1] || null, idx: i };
+  }
+  return { step: steps[steps.length - 1] || null, next: null, idx: steps.length - 1 };
+}
+// Spreek manoeuvres uit op twee momenten: ~300m vooraf ("over 300 meter
+// rechts afslaan") en ~30m vooraf ("nu rechts"). spokenStepIdx onthoudt
+// welke stap al is aangekondigd, spokenStepStage of we vroeg/laat hebben
+// gesproken.
+function maybeSpeakManeuver(route, distM) {
+  if (!state.driving || !state.voiceOn) return;
+  const { step, next, idx } = findCurrentStep(route, distM);
+  if (!step || !next) return;
+  if (next.type === "arrive") return;
+  const remaining = (step.toM ?? 0) - distM;
+  if (idx !== state.spokenStepIdx) {
+    state.spokenStepIdx = idx;
+    state.spokenStepStage = null;
+  }
+  const text = maneuverText(next);
+  if (remaining < 30 && state.spokenStepStage !== "now") {
+    state.spokenStepStage = "now";
+    speak(text);
+  } else if (remaining < 300 && remaining > 30 && state.spokenStepStage == null) {
+    state.spokenStepStage = "early";
+    const m = Math.round(remaining / 50) * 50;
+    speak(`Over ${m} meter, ${text.toLowerCase()}`);
+  }
+}
+
+function setManeuverBanner(route, distM) {
+  const banner = $("maneuver-banner");
+  if (!route || !state.driving) { banner.classList.add("hidden"); return; }
+  const { step, next } = findCurrentStep(route, distM);
+  // De manoeuvre die we tonen is die waar deze stap NAAR TOE leidt — dat is
+  // het eindpunt van de huidige stap, en de inhoud van de volgende stap.
+  const target = next || step;
+  if (!target) { banner.classList.add("hidden"); return; }
+  const remaining = Math.max(0, (step.toM ?? 0) - distM);
+  banner.classList.remove("hidden");
+  $("maneuver-arrow").textContent = maneuverArrow(target);
+  $("maneuver-distance").textContent = remaining < 50 ? "Nu" :
+    remaining < 1000 ? `${Math.round(remaining / 10) * 10} m` :
+    `${(remaining / 1000).toFixed(1)} km`;
+  $("maneuver-name").textContent = maneuverText(target);
+}
+
 // ============ Groene-golf ============
 // Voor opeenvolgende slimme lichten: zijn ze allemaal groen bij aankomst?
 // Als ja, teken een groene streep over dat route-segment.
@@ -1052,7 +1342,10 @@ function clearAll() {
     if (r.polyline) map.removeLayer(r.polyline);
     if (r.glow) map.removeLayer(r.glow);
     if (r.signalsLayer) map.removeLayer(r.signalsLayer);
+    if (r.pillMarker) map.removeLayer(r.pillMarker);
+    if (r._chargingMarkers) for (const m of r._chargingMarkers) map.removeLayer(m);
   }
+  $("ev-hint")?.classList.add("hidden");
   state.routes = [];
   state.activeRouteIdx = -1;
   if (state.startMarker) { map.removeLayer(state.startMarker); state.startMarker = null; }
@@ -1088,12 +1381,48 @@ function setActiveRoute(idx) {
     }
   }
   if (state.routes[idx]?.polyline) state.routes[idx].polyline.bringToFront();
+  renderRoutePills();
+  drawChargingStops(state.routes);
+  renderEvHint();
+}
+
+// Tijdverschil-pill ("+3 min" of "snelste") in het midden van elk
+// route-lijntje, klikbaar om die route te kiezen. Zoals Google/Apple Maps.
+function renderRoutePills() {
+  for (const r of state.routes) {
+    if (r.pillMarker) { map.removeLayer(r.pillMarker); r.pillMarker = null; }
+  }
+  if (state.routes.length < 2) return;
+  const fastest = Math.min(...state.routes.map(r => r.duration));
+  for (let i = 0; i < state.routes.length; i++) {
+    const r = state.routes[i];
+    const isActive = i === state.activeRouteIdx;
+    const isFastest = Math.abs(r.duration - fastest) < 1;
+    const diffMin = Math.round((r.duration - fastest) / 60);
+    let label;
+    if (isFastest) label = "snelste";
+    else if (diffMin === 0) label = "even snel";
+    else label = `+${diffMin} min`;
+    const mid = r.coords[Math.floor(r.coords.length / 2)];
+    const cls = "route-pill" + (isActive ? " active" : "") + (isFastest ? " fastest" : "");
+    const icon = L.divIcon({
+      className: cls,
+      html: `<span>${label}</span>`,
+      iconSize: null,
+      iconAnchor: [30, 12],
+    });
+    r.pillMarker = L.marker(mid, { icon, interactive: true, keyboard: false }).addTo(map);
+    r.pillMarker.on("click", () => selectRoute(i));
+  }
 }
 function selectRoute(idx) {
   if (idx < 0 || idx >= state.routes.length || idx === state.activeRouteIdx) return;
   setActiveRoute(idx);
   state.drivePos = 0;
   state.spokenLightIds.clear();
+  state.spokenStepIdx = -1;
+  state.spokenStepStage = null;
+  state.spokenGlosa = null;
   if (state.driver) state.driver.setLatLng(state.routes[idx].coords[0]);
   state.driving = false;
   $("drive-toggle").textContent = "Start rit";
@@ -1199,6 +1528,7 @@ function setNextLightUI(data) {
     $("next-phase").textContent = "geen lichten meer";
     $("next-countdown").textContent = "--";
     $("glosa").classList.add("hidden");
+    $("lane-guidance").classList.add("hidden");
     return;
   }
   $("next-distance").textContent = fmtDistance(data.remainingM);
@@ -1207,6 +1537,7 @@ function setNextLightUI(data) {
     $("next-phase").textContent = "klassiek licht — geen live data";
     $("next-countdown").textContent = "klassiek";
     $("glosa").classList.add("hidden");
+    $("lane-guidance").classList.add("hidden");
     return;
   }
   if (data.color === "red")   { $("mini-red").classList.add("on");   card.classList.add("is-red"); }
@@ -1214,13 +1545,65 @@ function setNextLightUI(data) {
   if (data.color === "green") { $("mini-green").classList.add("on"); card.classList.add("is-green"); }
   $("next-phase").textContent = `nu ${data.phase} · bij aankomst ${data.arrival}`;
   $("next-countdown").textContent = data.secondsLeft.toFixed(0);
+  if (data.lanes) renderLaneGuidance(data.lanes);
+  else $("lane-guidance").classList.add("hidden");
+}
+
+// Lane-guidance: per signaalgroep een mini-pijl tonen met zijn huidige
+// fase. Echte UDAP MAP-data is hier niet beschikbaar in demo-mode, dus
+// genereren we een deterministische opstelling op basis van het signaal-ID.
+// Wel realistisch: niet elke richting is groen tegelijk.
+const LANE_DIRS = ["left", "straight", "right"];
+const LANE_ARROWS = { left: "↰", straight: "↑", right: "↱" };
+
+function lanesForSignal(signal) {
+  if (signal._lanes) return signal._lanes;
+  const id = Number(signal.id) || 0;
+  // Deterministische hash → 2 of 3 richtingen, ieder met eigen fase-offset
+  const dirCount = (Math.abs(id) % 3) + 2; // 2 of 3 of 4
+  const lanes = [];
+  for (let i = 0; i < dirCount && i < LANE_DIRS.length; i++) {
+    const dir = LANE_DIRS[i];
+    // Versla offset per richting zodat ze gespreid groen worden
+    const laneOffset = signal.offsetS + ((id * 13 + i * 17) % CYCLE_TOTAL) - CYCLE_TOTAL / 2;
+    lanes.push({ dir, offsetS: laneOffset });
+  }
+  signal._lanes = lanes;
+  return lanes;
+}
+function renderLaneGuidance(lanes) {
+  const wrap = $("lane-guidance");
+  const row = $("lane-row");
+  wrap.classList.remove("hidden");
+  row.innerHTML = "";
+  for (const l of lanes) {
+    const ph = phaseAt(l.offsetS);
+    const span = document.createElement("span");
+    span.className = `lane-arrow ${ph.color}`;
+    span.textContent = LANE_ARROWS[l.dir] || "↑";
+    row.appendChild(span);
+  }
 }
 function setGlosa(text, kind) {
   const el = $("glosa");
-  if (!text) { el.classList.add("hidden"); return; }
+  if (!text) {
+    el.classList.add("hidden");
+    state.spokenGlosa = null;
+    return;
+  }
   el.classList.remove("hidden", "warn");
   if (kind === "warn") el.classList.add("warn");
   $("glosa-text").textContent = text;
+  // Spraak: alleen voorlezen als advies ECHT verandert (niet bij elke tick).
+  // Strip nummers zodat "Hou ~50 km/u" en "Hou ~52 km/u" als gelijk gelden.
+  if (state.driving && state.voiceOn) {
+    const sig = text.replace(/\d+/g, "#").replace(/[—–]/g, "-");
+    if (sig !== state.spokenGlosa) {
+      state.spokenGlosa = sig;
+      // Strip emoji's voor TTS, die klinken raar uitgesproken.
+      speak(text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim());
+    }
+  }
 }
 function setSpeedSign(kmh) {
   const el = $("speed-sign");
@@ -1391,6 +1774,7 @@ async function planRoute() {
     // Tot ze binnen zijn gebruiken we een fallback (50 / 25 / 5 km/u).
     routes.forEach(r => { r.limitIntervals = []; });
     backgroundLoadLimits(routes);
+    backgroundLoadChargingStations(routes);
 
     clearAll();
     state.routes = routes;
@@ -1474,6 +1858,10 @@ function tick() {
     tick._lastTickMs = null;
     setSpeedometer(null);
   }
+  // Manoeuvre-banner volgt drivePos
+  setManeuverBanner(r, state.drivePos);
+  // Spraak voor manoeuvres bij naderen
+  maybeSpeakManeuver(r, state.drivePos);
   // Realistische "huidige snelheid" voor GLOSA en upcoming-ETAs
   const speed = state.driving ? aiSpeedAt(state.drivePos, r) : avgSpeedMS();
 
@@ -1512,6 +1900,7 @@ function tick() {
       setNextLightUI({
         smart: true, color: nowPh.color, phase: nowPh.phase,
         secondsLeft: nowPh.secondsLeft, remainingM, arrival: arrPh.phase,
+        lanes: lanesForSignal(next),
       });
       if (state.driving) {
         const limKmh = lowestLimitBetween(intervals, state.drivePos, next.distM, fallbackKmh);
@@ -1614,10 +2003,14 @@ function stopRit() {
   state.driving = false;
   tick._lastTickMs = null;
   releaseWakeLock();
+  if (liveViewTimer) { clearInterval(liveViewTimer); liveViewTimer = null; }
+  if (state.liveMarker) { map.removeLayer(state.liveMarker); state.liveMarker = null; }
+  $("live-banner")?.classList.add("hidden");
   $("drive-toggle").textContent = "Start rit";
   $("drive-stop").classList.add("hidden");
   setSpeedometer(null);
   $("speed-sign").classList.add("hidden");
+  $("maneuver-banner").classList.add("hidden");
   setGlosa(null);
   clearAll();
   $("sheet").classList.add("hidden");
@@ -1764,6 +2157,9 @@ function tryAutoplanFromUrl() {
   const to = url.searchParams.get("to");
   const via = url.searchParams.get("via");
   const p = url.searchParams.get("p");
+  const live = url.searchParams.get("live") === "1";
+  const liveT = parseInt(url.searchParams.get("t") || "0", 10);
+  const liveDur = parseInt(url.searchParams.get("dur") || "0", 10);
   if (!from || !to) return;
   if (p && PROFILE_TO_OSRM[p]) setProfile(p);
   if (via) {
@@ -1775,7 +2171,51 @@ function tryAutoplanFromUrl() {
     via.split("|").forEach((v, i) => { if (inputs[i+1]) inputs[i+1].value = v; });
   }
   inputs[inputs.length - 1].value = to;
-  planRoute();
+  planRoute().then(() => {
+    if (live && liveT && liveDur && state.routes.length) startLiveView(liveT, liveDur);
+  });
+}
+
+// Viewer voor "live ETA"-links: projecteer de bewegende positie van de
+// chauffeur op de actieve route op basis van verstreken tijd. Geen
+// daadwerkelijke server, dus dit is een schatting — de chauffeur kan in
+// werkelijkheid eerder/later zijn.
+let liveViewTimer = null;
+function startLiveView(startedAtS, durationS) {
+  if (liveViewTimer) clearInterval(liveViewTimer);
+  $("live-banner")?.classList.remove("hidden");
+  const tick = () => {
+    const r = state.routes[state.activeRouteIdx];
+    if (!r) return;
+    const elapsed = (Date.now() / 1000) - startedAtS;
+    const frac = Math.max(0, Math.min(1, elapsed / durationS));
+    const distAlong = r.distance * frac;
+    const pt = pointAtDistance(r.coords, r.cumDist, distAlong);
+    if (!state.liveMarker) {
+      state.liveMarker = L.marker(pt, {
+        icon: L.divIcon({
+          className: "live-driver-marker",
+          html: `<div class="ld-pin">🚗</div>`,
+          iconSize: [36, 36], iconAnchor: [18, 18],
+        }),
+      }).addTo(map);
+    } else {
+      state.liveMarker.setLatLng(pt);
+    }
+    const remainS = Math.max(0, durationS - elapsed);
+    const arrival = new Date((startedAtS + durationS) * 1000);
+    const hh = String(arrival.getHours()).padStart(2, "0");
+    const mm = String(arrival.getMinutes()).padStart(2, "0");
+    $("live-eta")?.replaceChildren(document.createTextNode(`${hh}:${mm}`));
+    $("live-remain")?.replaceChildren(document.createTextNode(fmtDuration(remainS)));
+    $("live-frac")?.replaceChildren(document.createTextNode(`${Math.round(frac * 100)}%`));
+    if (frac >= 1 && liveViewTimer) {
+      clearInterval(liveViewTimer);
+      liveViewTimer = null;
+    }
+  };
+  tick();
+  liveViewTimer = setInterval(tick, 5000);
 }
 
 // ============ Profile (auto/fiets/voet) ============
@@ -1791,6 +2231,7 @@ function startGps() {
   if (!navigator.geolocation) { showToast("Geolocatie niet beschikbaar.", "error"); return; }
   state.gpsWatch = navigator.geolocation.watchPosition((pos) => {
     const { latitude, longitude } = pos.coords;
+    state.lastGps = { lat: latitude, lon: longitude };
     if (state.driver) state.driver.setLatLng([latitude, longitude]);
     else state.driver = makeDriverMarker(latitude, longitude);
     // Project onto active route (if any)
@@ -1875,13 +2316,33 @@ $("voice-toggle").addEventListener("click", () => {
   $("voice-toggle").classList.toggle("active", state.voiceOn);
   if (state.voiceOn) speak("Spraak aan");
 });
+function buildShareUrl(opts = {}) {
+  const url = new URL(window.location.href);
+  // Behoud bestaande from/to/via/p; voeg live-ETA-params toe als gevraagd.
+  if (opts.live && state.driving) {
+    const r = state.routes[state.activeRouteIdx];
+    if (r) {
+      const startedAt = state.driveStats?.startedAt || (Date.now() / 1000);
+      url.searchParams.set("live", "1");
+      url.searchParams.set("t", String(Math.round(startedAt)));
+      url.searchParams.set("dur", String(Math.round(r.duration)));
+    }
+  } else {
+    url.searchParams.delete("live");
+    url.searchParams.delete("t");
+    url.searchParams.delete("dur");
+  }
+  return url.toString();
+}
+
 $("share-btn").addEventListener("click", async () => {
-  const url = window.location.href;
+  const url = buildShareUrl({ live: state.driving });
+  const title = state.driving ? "Volg mijn rit live" : "Verkeerslicht-route";
   try {
-    if (navigator.share) await navigator.share({ title: "Verkeerslicht-route", url });
+    if (navigator.share) await navigator.share({ title, url });
     else {
       await navigator.clipboard.writeText(url);
-      showToast("Link gekopieerd.");
+      showToast(state.driving ? "Live ETA-link gekopieerd." : "Link gekopieerd.");
     }
   } catch {}
 });
@@ -1899,6 +2360,33 @@ $("prefer-fewest").addEventListener("change", (e) => {
     if (state.preferFewest) indices.sort((a, b) => (state.routes[a].signals?.length ?? 0) - (state.routes[b].signals?.length ?? 0));
     selectRoute(indices[0]);
   }
+});
+
+function bindAvoidToggle(id, key) {
+  const el = $(id);
+  if (!el) return;
+  el.checked = state[key];
+  el.addEventListener("change", (e) => {
+    state[key] = e.target.checked;
+    localStorage.setItem("verkeerslicht." + key, e.target.checked ? "1" : "0");
+  });
+}
+bindAvoidToggle("avoid-motorway", "avoidMotorway");
+bindAvoidToggle("avoid-toll", "avoidToll");
+bindAvoidToggle("avoid-ferry", "avoidFerry");
+
+// Melden-knop
+$("report-fab")?.addEventListener("click", () => {
+  $("report-modal").classList.remove("hidden");
+});
+$("report-close")?.addEventListener("click", () => {
+  $("report-modal").classList.add("hidden");
+});
+document.querySelectorAll(".report-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    addReport(btn.dataset.type);
+    $("report-modal").classList.add("hidden");
+  });
 });
 $("show-all-lights").addEventListener("change", refreshCityLights);
 $("follow-gps").addEventListener("change", (e) => {
@@ -2209,10 +2697,15 @@ $("vehicle-clear")?.addEventListener("click", () => {
 setMode("Demo", "demo");
 renderHistory();
 renderVehicleButton();
+redrawReports();
+$("report-fab")?.classList.remove("hidden");
 startTickLoop();
 setTimeout(tryAutoplanFromUrl, 100);
 
-// Service worker (minimal, voor PWA-installeerbaar)
+// Service worker — cache-first voor app-shell + OSM-tegels.
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.register("./sw.js").then(() => {
+    // Trim tegel-cache periodiek zodat hij niet eindeloos groeit.
+    setInterval(() => navigator.serviceWorker.controller?.postMessage({ type: "trim-tiles" }), 5 * 60 * 1000);
+  }).catch(() => {});
 }
