@@ -10,7 +10,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY static ./static
+COPY index.html app.js style.css manifest.webmanifest sw.js .nojekyll ./
 
 ENV HOST=0.0.0.0 \
     PORT=8000
