@@ -1188,6 +1188,9 @@ function enterChaseMode() {
     chaseHeading = bearingDeg(p, ahead);
     document.body.style.setProperty("--chase-heading", `${-chaseHeading}deg`);
   }
+  // Map is nu 150% groot via CSS inset — Leaflet moet tiles renderen voor
+  // het nieuwe gebied, anders zie je grijze hoeken na rotatie.
+  setTimeout(() => map.invalidateSize(false), 50);
 }
 function exitChaseMode() {
   document.body.classList.remove("chase-mode");
@@ -1196,17 +1199,17 @@ function exitChaseMode() {
     map.setZoom(chasePrevZoom);
   }
   chasePrevZoom = null;
+  setTimeout(() => map.invalidateSize(false), 50);
 }
 function updateChaseHeading(rawDeg) {
   if (!document.body.classList.contains("chase-mode")) return;
   // Kortste weg om naar de doelhoek te draaien (vermijd 359→0 sprong).
+  // chaseHeading mag onbegrensd accumuleren — CSS transitions interpoleren
+  // dan elk frame over een kleine delta, geen 360° sprongen.
   let delta = rawDeg - chaseHeading;
   while (delta > 180) delta -= 360;
   while (delta < -180) delta += 360;
   chaseHeading += delta * CHASE_SMOOTHING;
-  // Normalize naar [-180, 180] voor compactheid
-  while (chaseHeading > 180) chaseHeading -= 360;
-  while (chaseHeading < -180) chaseHeading += 360;
   document.body.style.setProperty("--chase-heading", `${-chaseHeading}deg`);
 }
 

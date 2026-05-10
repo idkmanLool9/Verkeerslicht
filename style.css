@@ -74,24 +74,28 @@ html, body {
 .leaflet-tile { filter: var(--tile-filter); }
 
 /* ====== Chase-camera (rijden) ======
-   Roteert de hele kaart zodat de rijrichting "naar boven" wijst, zoom in
-   en plaats het draaipunt onderaan zodat de auto-marker daar belandt en
-   de weg vóór je het hele beeld vult. transform-origin 50% 78% = onderkant.
-   We schalen ook ~1.5x zodat de hoeken van de viewport gevuld blijven na
-   rotatie (anders zie je achtergrondkleur in de hoeken). */
+   Roteert de hele kaart zodat de rijrichting "naar boven" wijst en plaatst
+   de auto-marker rond viewport's lower-third zodat de weg vóór je het beeld
+   vult.
+
+   Belangrijk: GEEN scale() gebruiken — die schaalt ook alle markers en
+   geeft een rare "vergrootglas"-look. In plaats daarvan maken we de .map
+   zelf groter dan de viewport (inset: -25vh -25vw → 150% × 150%) zodat
+   rotatie nooit lege hoeken laat zien. */
 body.chase-mode .map {
-  transform: scale(1.5) rotate(var(--chase-heading, 0deg));
-  transform-origin: 50% 78%;
+  inset: -25vh -25vw;
+  transform: rotate(var(--chase-heading, 0deg));
+  transform-origin: 50% 66.7%;
   transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 /* Body krijgt initiele variabele zodat eerste frame niet schokt */
 body { --chase-heading: 0deg; }
-/* In chase-mode hebben we geen gebruikerinteractie nodig op alternatieve
-   route-pills (je rijdt al een route) — verberg ze om verwarring én
-   ondersteboven-tekst te voorkomen. */
+/* Leaflet-controls (zoom-knoppen, attribution) zitten binnen .map en
+   zouden bij inset:-25vw deels buiten viewport vallen. Verberg ze tijdens
+   rijden — gebruiker hoeft niet te zoomen of klikken. */
+body.chase-mode .leaflet-control-container { display: none; }
+/* Verberg alternatieve-route-pills tijdens chase-mode (anders ondersteboven). */
 body.chase-mode .route-pill { display: none !important; }
-/* Kaart-controls (zoom-knoppen, attribution) staan in een aparte container
-   buiten .map, die roteert dus niet — perfect. */
 .leaflet-control-attribution {
   background: rgba(10, 14, 20, 0.7) !important;
   color: rgba(255,255,255,0.55) !important;
