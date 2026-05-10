@@ -453,19 +453,27 @@ async function fetchVehicleByKenteken(kenteken) {
 }
 
 async function fetchVehiclePhoto(merk, model) {
-  if (!merk) return null;
+  if (!merk || !model) return null;
+  // RDW geeft model vaak met code-suffix ("TUCSON DM" of "GOLF VARIANT 1.4"),
+  // pak alleen het eerste woord — dat is meestal de modelnaam.
+  const modelHead = String(model).split(/\s+/)[0];
+  // Generator=search vindt de juiste pagina ook bij rare casing of
+  // modelnaam-variaties. Voorkomt dat we per ongeluk op de pagina
+  // van het concern (bv. Hyundai HQ-gebouw) belanden.
   const queries = [
-    `${merk} ${model || ""}`.trim(),
-    merk,
+    `${merk} ${modelHead} car`,
+    `${merk} ${modelHead}`,
   ];
   for (const q of queries) {
     try {
-      const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&titles=${encodeURIComponent(q)}&prop=pageimages&pithumbsize=600&redirects=1`;
+      const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=3&prop=pageimages&pithumbsize=600`;
       const res = await fetch(url);
       if (!res.ok) continue;
       const json = await res.json();
-      const pages = json.query?.pages || {};
-      for (const p of Object.values(pages)) {
+      const pages = Object.values(json.query?.pages || {});
+      // Sorteer op zoekvolgorde (index) — eerste match heeft hoogste relevantie.
+      pages.sort((a, b) => (a.index ?? 99) - (b.index ?? 99));
+      for (const p of pages) {
         if (p.thumbnail?.source) return p.thumbnail.source;
       }
     } catch {}
@@ -2127,10 +2135,15 @@ function showVehicleCard(v) {
     photoWrap.classList.add("has-img");
   } else if (v.merk) {
     fetchVehiclePhoto(v.merk, v.model).then(url => {
-      if (url) {
-        photo.src = url;
-        photoWrap.classList.add("has-img");
-        if (pendingVehicle) pendingVehicle.photoUrl = url;
+      if (!url) return;
+      // Race-check: kaart kan inmiddels een ander voertuig tonen.
+      if (normalizeKenteken($("kenteken-input").value) !== normalizeKenteken(v.kenteken)) return;
+      photo.src = url;
+      photoWrap.classList.add("has-img");
+      if (pendingVehicle && pendingVehicle.kenteken === v.kenteken) pendingVehicle.photoUrl = url;
+      if (state.vehicle && state.vehicle.kenteken === v.kenteken) {
+        state.vehicle.photoUrl = url;
+        saveVehicle(state.vehicle);
       }
     });
   }
