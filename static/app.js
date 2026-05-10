@@ -1990,12 +1990,24 @@ function openVehicleModal() {
   if (state.vehicle) {
     $("kenteken-input").value = formatKenteken(state.vehicle.kenteken);
     showVehicleCard(state.vehicle);
+    refreshVehicleSilently(state.vehicle.kenteken);
   } else {
     $("kenteken-input").value = "";
     $("vehicle-card").classList.add("hidden");
     $("vehicle-save").disabled = true;
   }
   setTimeout(() => $("kenteken-input").focus(), 50);
+}
+
+async function refreshVehicleSilently(kenteken) {
+  try {
+    const fresh = await fetchVehicleByKenteken(kenteken);
+    if ($("vehicle-modal").classList.contains("hidden")) return;
+    if (normalizeKenteken($("kenteken-input").value) !== normalizeKenteken(kenteken)) return;
+    saveVehicle(fresh);
+    state.vehicle = fresh;
+    showVehicleCard(fresh);
+  } catch {}
 }
 function closeVehicleModal() {
   $("vehicle-modal").classList.add("hidden");
