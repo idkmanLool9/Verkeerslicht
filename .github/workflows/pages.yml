@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/traffic-light-detection-app-hobzI
+      - claude/review-and-continue-cea9s
   workflow_dispatch:
 
 permissions:
@@ -29,7 +30,7 @@ jobs:
       - name: Upload static site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./static
+          path: .
 
   deploy:
     needs: build

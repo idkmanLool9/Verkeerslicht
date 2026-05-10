@@ -16,7 +16,7 @@ verkeerslicht, zodat je de UI direct kunt zien werken.
 - `app/state.py` - in-memory store van laatst bekende fases per signaalgroep.
 - `app/demo.py` - simulator van een 40s-cyclus voor offline gebruik.
 - `app/api.py` - FastAPI met REST-endpoints en statische UI.
-- `static/index.html` - eenvoudige web-UI met aftelling per signaalgroep.
+- `index.html`, `app.js`, `style.css`, `sw.js` - web-UI met kaart, route, GLOSA en RDW-modal.
 
 ## Snelle start (demomodus)
 
@@ -102,9 +102,9 @@ Setup:
 1. Push deze repo naar GitHub.
 2. Open in GitHub: **Settings → Pages**, en zet **Source** op
    *GitHub Actions*.
-3. De workflow `.github/workflows/pages.yml` bouwt en publiceert
-   `static/` bij elke push naar `main` of de feature-branch. Je kunt hem
-   ook handmatig draaien via **Actions → Deploy verkeerslicht-demo →
+3. De workflow `.github/workflows/pages.yml` publiceert de hele repo-root
+   bij elke push naar de geconfigureerde branches. Je kunt hem ook
+   handmatig draaien via **Actions → Deploy verkeerslicht-demo →
    Run workflow**.
 4. Na ~1 min staat de demo op
    `https://<gebruiker>.github.io/<repo>/`.

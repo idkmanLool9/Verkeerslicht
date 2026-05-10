@@ -9,7 +9,6 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, load_settings
 from .demo import DEMO_INTERSECTION_ID, DemoSimulator
@@ -18,7 +17,7 @@ from .state import store
 
 log = logging.getLogger(__name__)
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR = Path(__file__).resolve().parent.parent
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -94,9 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return signal.to_dict()
 
-    if STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
+    if (STATIC_DIR / "index.html").exists():
         @app.get("/")
         def index():
             return FileResponse(STATIC_DIR / "index.html")
@@ -108,5 +105,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         @app.get("/style.css")
         def style_css():
             return FileResponse(STATIC_DIR / "style.css", media_type="text/css")
+
+        @app.get("/manifest.webmanifest")
+        def manifest():
+            return FileResponse(STATIC_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+
+        @app.get("/sw.js")
+        def sw():
+            return FileResponse(STATIC_DIR / "sw.js", media_type="text/javascript")
 
     return app

@@ -76,6 +76,11 @@
           <span>minste lichten</span>
         </label>
       </div>
+      <div class="avoid-row">
+        <label class="check"><input type="checkbox" id="avoid-motorway" /><span>geen snelweg</span></label>
+        <label class="check"><input type="checkbox" id="avoid-toll" /><span>geen tol</span></label>
+        <label class="check"><input type="checkbox" id="avoid-ferry" /><span>geen veerboot</span></label>
+      </div>
       <div id="suggestions" class="suggestions hidden"></div>
       <button id="plan" class="btn btn-primary btn-block">
         <span class="btn-icon">▶</span> Plan rit
@@ -87,6 +92,8 @@
     <div id="routes-list" class="routes-list hidden">
       <div class="routes-title">routes</div>
     </div>
+
+    <div id="ev-hint" class="ev-hint hidden">⚡</div>
 
     <div class="legend">
       <div class="legend-title">stoplichten</div>
@@ -115,6 +122,56 @@
       </details>
     </div>
   </aside>
+
+  <!-- Live ETA-banner (alleen zichtbaar in viewer-mode, ?live=1) -->
+  <div id="live-banner" class="live-banner hidden">
+    <div class="live-row">
+      <span class="live-emoji">🚗</span>
+      <div>
+        <div class="live-label">Verwachte aankomst</div>
+        <div class="live-eta" id="live-eta">--:--</div>
+      </div>
+    </div>
+    <div class="live-row sub">
+      <span>Nog <span id="live-remain">–</span></span>
+      <span>·</span>
+      <span><span id="live-frac">–</span> gereden</span>
+    </div>
+  </div>
+
+  <!-- Melden-knop (rechtsonder, altijd zichtbaar als kaart open) -->
+  <button id="report-fab" class="report-fab hidden" title="Melden" aria-label="Melden">
+    <span class="report-fab-icon">⚠</span>
+    <span class="report-fab-label">Melden</span>
+  </button>
+
+  <!-- Melden-modal -->
+  <div id="report-modal" class="modal hidden">
+    <div class="modal-card report-card">
+      <div class="modal-title">Wat zie je?</div>
+      <p class="modal-sub">Je melding blijft op dit toestel. Andere gebruikers zien hem nu niet.</p>
+      <div class="report-grid">
+        <button class="report-btn" data-type="flitser"><span class="r-emoji">📷</span><span>Flitser</span></button>
+        <button class="report-btn" data-type="file"><span class="r-emoji">🚗</span><span>File</span></button>
+        <button class="report-btn" data-type="ongeval"><span class="r-emoji">💥</span><span>Ongeval</span></button>
+        <button class="report-btn" data-type="wegwerk"><span class="r-emoji">🚧</span><span>Wegwerk</span></button>
+        <button class="report-btn" data-type="obstakel"><span class="r-emoji">⚠</span><span>Obstakel</span></button>
+        <button class="report-btn" data-type="spookrijder"><span class="r-emoji">↩</span><span>Spookrijder</span></button>
+      </div>
+      <div class="vehicle-actions">
+        <button id="report-close" class="btn btn-ghost btn-compact">Sluiten</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manoeuvre-banner (boven, tijdens rijden) -->
+  <div id="maneuver-banner" class="maneuver-banner hidden">
+    <div class="maneuver-arrow" id="maneuver-arrow">↑</div>
+    <div class="maneuver-text">
+      <div class="maneuver-distance" id="maneuver-distance">–</div>
+      <div class="maneuver-name" id="maneuver-name">–</div>
+    </div>
+  </div>
 
   <!-- Speed-limit-bord -->
   <div id="speed-sign" class="speed-sign hidden">
@@ -174,6 +231,11 @@
         <div id="next-countdown">--</div>
         <div class="next-countdown-unit">s</div>
       </div>
+    </div>
+
+    <div id="lane-guidance" class="lane-guidance hidden">
+      <span class="lane-label">richtingen</span>
+      <div class="lane-row" id="lane-row"></div>
     </div>
 
     <div id="glosa" class="glosa hidden">
