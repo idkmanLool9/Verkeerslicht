@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/traffic-light-detection-app-hobzI
+      - claude/review-and-continue-cea9s
   workflow_dispatch:
 
 permissions:
