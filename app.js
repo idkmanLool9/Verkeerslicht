@@ -624,9 +624,16 @@ async function geocode(query) {
 async function suggest(query) {
   if (!query || query.length < 2) return [];
   const url = `${NOMINATIM}?format=json&limit=6&countrycodes=nl&addressdetails=1&q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) return [];
-  return await res.json();
+  // Suggesties mogen GEEN unhandled rejection veroorzaken — Nominatim heeft
+  // strikte rate-limits en geeft af en toe netwerk-errors. Stille fallback
+  // naar lege lijst is hier prima.
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
 }
 async function fetchRoutes(coords) {
   const profile = PROFILE_TO_OSRM[state.profile] ?? "driving";
