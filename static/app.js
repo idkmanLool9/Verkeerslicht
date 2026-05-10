@@ -710,9 +710,11 @@ function rushHourLabel(date = new Date()) {
 
 // Verwachte wachttijd bij een licht. Slim: gebruik de fase-voorspelling.
 // Klassiek: aanname is 35% kans rood, gemiddelde wachttijd 12s als rood.
-function expectedLightWait(signal, fromM, baseSpeedMS) {
+function expectedLightWait(signal, fromM, route) {
   if (!signal.smart) return 0.35 * 12;
-  const eta = (signal.distM - fromM) / baseSpeedMS;
+  // Gebruik AI-snelheid (incl. spitsuur, weer, wegtype) i.p.v. OSRM-baseline,
+  // anders zit de fase-voorspelling tot 40% naast de werkelijkheid in de spits.
+  const eta = aiTimeToReach(route, fromM, signal.distM);
   const ph = predictAtArrival(signal.offsetS, eta);
   if (ph.color === "red")   return Math.min(ph.secondsLeft, 25);
   if (ph.color === "amber") return 1;
@@ -816,7 +818,7 @@ function aiEstimate(route, fromM = 0) {
   const ahead = (route.signals || []).filter(s => s.distM > fromM);
   let lightWaitS = 0;
   for (const s of ahead) {
-    lightWaitS += expectedLightWait(s, fromM, osrmSpeed);
+    lightWaitS += expectedLightWait(s, fromM, route);
   }
 
   const durationS = drivingS + lightWaitS;
