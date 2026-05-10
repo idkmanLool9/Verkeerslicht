@@ -859,6 +859,16 @@ html[data-theme="light"] .api-base-row input { background: rgba(0,0,0,0.04); }
 }
 html[data-theme="light"] .next-light { background: rgba(0,0,0,0.03); }
 .next-light.classic { opacity: 0.85; }
+.next-light.is-far .next-phase { color: var(--text-mute); font-style: italic; }
+.next-light.is-far #next-countdown {
+  font-size: 1rem;
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: var(--text-mute);
+  letter-spacing: 0;
+}
+.next-light.is-far .next-countdown-unit { display: none; }
 .lamp-mini {
   background: #16181d;
   border: 1px solid var(--border);

@@ -1516,9 +1516,15 @@ function showSheet() {
   $("sheet").setAttribute("aria-hidden", "false");
   setTimeout(() => map.invalidateSize(), 50);
 }
+// Drempel waarboven we de next-light card "stil" houden: aftelling,
+// fase-bij-aankomst, GLOSA en lane-guidance zijn dan zinloos (licht
+// cycliseert nog meerdere keren) en leiden alleen maar af. Onder 500m
+// (~30s bij 50 km/u) wordt de info wél relevant.
+const NEXT_LIGHT_DETAIL_THRESHOLD_M = 500;
+
 function setNextLightUI(data) {
   const card = $("next-light");
-  card.classList.remove("is-red", "is-amber", "is-green", "classic");
+  card.classList.remove("is-red", "is-amber", "is-green", "classic", "is-far");
   $("mini-red").classList.remove("on");
   $("mini-amber").classList.remove("on");
   $("mini-green").classList.remove("on");
@@ -1540,9 +1546,24 @@ function setNextLightUI(data) {
     $("lane-guidance").classList.add("hidden");
     return;
   }
+  // Huidige kleur tonen we altijd — ook ver weg, want je wilt zien of
+  // het lichtgroep "ergens daar voor" actief is.
   if (data.color === "red")   { $("mini-red").classList.add("on");   card.classList.add("is-red"); }
   if (data.color === "amber") { $("mini-amber").classList.add("on"); card.classList.add("is-amber"); }
   if (data.color === "green") { $("mini-green").classList.add("on"); card.classList.add("is-green"); }
+
+  const isFar = data.remainingM > NEXT_LIGHT_DETAIL_THRESHOLD_M;
+  if (isFar) {
+    // Ver weg: rust in de UI. Geen aftelling, geen fase-bij-aankomst,
+    // geen GLOSA, geen lane-guidance — alleen "verderop" + huidige kleur.
+    card.classList.add("is-far");
+    $("next-phase").textContent = "verderop";
+    $("next-countdown").textContent = "—";
+    $("glosa").classList.add("hidden");
+    $("lane-guidance").classList.add("hidden");
+    return;
+  }
+
   $("next-phase").textContent = `nu ${data.phase} · bij aankomst ${data.arrival}`;
   $("next-countdown").textContent = data.secondsLeft.toFixed(0);
   if (data.lanes) renderLaneGuidance(data.lanes);
@@ -1902,7 +1923,7 @@ function tick() {
         secondsLeft: nowPh.secondsLeft, remainingM, arrival: arrPh.phase,
         lanes: lanesForSignal(next),
       });
-      if (state.driving) {
+      if (state.driving && remainingM <= NEXT_LIGHT_DETAIL_THRESHOLD_M) {
         const limKmh = lowestLimitBetween(intervals, state.drivePos, next.distM, fallbackKmh);
         const tip = computeGlosa(remainingM, next, speed, limKmh / 3.6);
         const currentKmh = Math.round(speed * 3.6);
